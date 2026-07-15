@@ -5,12 +5,11 @@
  * wholesale energy provider), delegates it to the sender. Keeps the spread
  * as profit.
  */
-
 import 'dotenv/config';
 import { TronWeb } from 'tronweb';
-import { MongoClient } from 'mongodb';
 import axios from 'axios';
 import fs from 'fs';
+import Transaction from './models/Transaction.js';
 
 // ---------- Configuration ----------
 const RECEIVE_ADDRESS = process.env.RECEIVE_ADDRESS;
@@ -24,7 +23,7 @@ const NETTS_API_URL = 'https://netts.io';
 const USDT_CONTRACT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 
 // Pricing table: TRX received → energy delivered (1 hour rental)
-// Netts order1h minimum is 61,000 energy, so all tiers below clear that floor.
+// Netts order 1h minimum is 61,000 energy, so all tiers below clear that floor.
 const PRICING = {
   3:  { energy:  65_000, label: '1 USDT tx (existing wallet)' },
   6:  { energy: 131_000, label: '1 USDT tx (new/exchange wallet)' },
@@ -54,28 +53,9 @@ const tronWeb = new TronWeb({
   privateKey: RECEIVE_PRIVATE_KEY,
 });
 
-// ---------- MongoDB ----------
-let mongoClient;
-let txCollection;
-
-async function initMongo() {
-  mongoClient = new MongoClient(MONGO_URI);
-  await mongoClient.connect();
-  const db = mongoClient.db(MONGO_DB);
-  txCollection = db.collection('transactions');
-
-  // Indexes
-  await txCollection.createIndex({ txid: 1 }, { unique: true });
-  await txCollection.createIndex({ status: 1 });
-  await txCollection.createIndex({ processedAt: -1 });
-  await txCollection.createIndex({ sender: 1 });
-
-  info(`MongoDB connected: ${MONGO_DB}`);
-}
-
 async function recordTransaction(data) {
   try {
-    await txCollection.updateOne(
+    await Transaction.findOneAndUpdate(
       { txid: data.txid },
       {
         $set: {
@@ -93,7 +73,7 @@ async function recordTransaction(data) {
         },
         $setOnInsert: { receivedAt: new Date() },
       },
-      { upsert: true }
+      { upsert: true, new: true }
     );
   } catch (e) {
     error(`Failed to record transaction ${data.txid}: ${e.message}`);
@@ -101,7 +81,7 @@ async function recordTransaction(data) {
 }
 
 async function isAlreadyProcessed(txid) {
-  const doc = await txCollection.findOne({ txid }, { projection: { _id: 1 } });
+  const doc = await Transaction.findOne({ txid }, { projection: { _id: 1 } });
   return !!doc;
 }
 
@@ -313,8 +293,6 @@ async function processTransaction(tx) {
 
 // ---------- Main loop ----------
 async function main() {
-  await initMongo();
-
   info('='.repeat(60));
   info('TRON Energy Reseller Bot starting');
   info(`Watching address: ${RECEIVE_ADDRESS}`);
@@ -338,16 +316,3 @@ async function main() {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 }
-
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  info('Shutting down');
-  if (mongoClient) await mongoClient.close();
-  process.exit(0);
-});
-
-main().catch(async (e) => {
-  error(`Fatal error: ${e.stack || e.message}`);
-  if (mongoClient) await mongoClient.close();
-  process.exit(1);
-});

@@ -2,17 +2,25 @@
   "name": "eezytron-clone",
   "version": "1.0.0",
   "description": "TRON energy reseller bot - resells wholesale energy at retail markup (MongoDB)",
-  "type": "module",
   "main": "src/bot.js",
   "scripts": {
-    "start": "node src/bot.js",
     "wallet": "node src/generate_wallet.js",
-    "stats": "node src/stats.js"
+    "stats": "node src/stats.js",
+    "start": "node app.js",
+    "dev": "nodemon app.js"
   },
   "dependencies": {
     "axios": "^1.7.7",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
     "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.3.0",
     "mongodb": "^6.10.0",
+    "mongoose": "^9.7.4",
+    "node-cron": "^4.6.0",
+    "nodemon": "^3.1.14",
     "tronweb": "^6.0.0"
   },
   "engines": {
