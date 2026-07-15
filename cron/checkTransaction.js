@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { checkTransactions } = require('../controllers/botNetts.js');
+const { checkTransactions } = require('../controllers/transactons');
 
 async function main() {
 
