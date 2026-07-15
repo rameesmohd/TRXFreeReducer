@@ -1,5 +1,5 @@
 // models/Transaction.js
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 const transactionSchema = new mongoose.Schema(
   {
@@ -21,4 +21,4 @@ const transactionSchema = new mongoose.Schema(
 
 transactionSchema.index({ processedAt: -1 });
 
-export default mongoose.model('Transaction', transactionSchema);
+module.exports = mongoose.model('Transaction', transactionSchema);

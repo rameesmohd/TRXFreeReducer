@@ -54,6 +54,8 @@ app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ limit: "15mb", extended: true })); 
 app.use(cookieParser());
 
+require('./cron/checkTransaction.js');
+
 const apiLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 500, 

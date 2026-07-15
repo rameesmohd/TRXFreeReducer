@@ -1,15 +1,8 @@
-/**
- * TRON Energy Reseller Bot (Node.js + MongoDB)
- * ============================================
- * Watches an address for incoming TRX, buys energy from Netts (aggregated
- * wholesale energy provider), delegates it to the sender. Keeps the spread
- * as profit.
- */
-import 'dotenv/config';
-import { TronWeb } from 'tronweb';
-import axios from 'axios';
-import fs from 'fs';
-import Transaction from './models/Transaction.js';
+const { TronWeb } = require('tronweb');
+const axios =require('axios');
+const fs =require ('fs');
+const Transaction =require('../models/Transaction.js');
+require('dotenv/config');
 
 // ---------- Configuration ----------
 const RECEIVE_ADDRESS = process.env.RECEIVE_ADDRESS;
@@ -17,8 +10,6 @@ const RECEIVE_PRIVATE_KEY = process.env.RECEIVE_PRIVATE_KEY;
 const TRONGRID_API_KEY = process.env.TRONGRID_API_KEY;
 const NETTS_API_KEY = process.env.NETTS_API_KEY;
 const NETTS_WHITELISTED_IP = process.env.NETTS_WHITELISTED_IP; // must match the IP whitelisted in your Netts dashboard
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017';
-const MONGO_DB = process.env.MONGO_DB || 'eezytron';
 const NETTS_API_URL = 'https://netts.io';
 const USDT_CONTRACT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 
@@ -30,8 +21,7 @@ const PRICING = {
   10: { energy: 200_000, label: '~3 USDT txs' },
   25: { energy: 550_000, label: '~8 USDT txs' },
 };
-const PRICE_TOLERANCE = 0.05;
-const POLL_INTERVAL_MS = 5000;
+const PRICE_TOLERANCE = 0.05
 
 // ---------- Logging ----------
 fs.mkdirSync('logs', { recursive: true });
@@ -104,7 +94,8 @@ async function getIncomingTransactions(address, minTimestampMs) {
     error(`TronGrid fetch failed: ${e.message}`);
     return [];
   }
-
+  console.log(data);
+  
   const txs = [];
   for (const tx of data) {
     const contracts = tx.raw_data?.contract || [];
@@ -206,29 +197,6 @@ async function buyEnergyFromNetts(receiver, energyAmount) {
   }
 }
 
-async function refund(sender, amount, reason) {
-  const refundAmount = amount - 0.1;
-  if (refundAmount <= 0) {
-    warn(`Refund amount too small after fee: ${sender}`);
-    return null;
-  }
-  try {
-    const amountSun = Math.floor(refundAmount * 1_000_000);
-    const tx = await tronWeb.transactionBuilder.sendTrx(sender, amountSun, RECEIVE_ADDRESS);
-    const txWithMemo = await tronWeb.transactionBuilder.addUpdateData(
-      tx, `Refund: ${reason}`, 'utf8'
-    );
-    const signed = await tronWeb.trx.sign(txWithMemo, RECEIVE_PRIVATE_KEY);
-    const result = await tronWeb.trx.sendRawTransaction(signed);
-    const txid = result.txid || result.transaction?.txID;
-    info(`Refunded ${refundAmount} TRX to ${sender}: ${txid}`);
-    return txid;
-  } catch (e) {
-    error(`Refund failed for ${sender}: ${e.message}`);
-    return null;
-  }
-}
-
 // ---------- Main processing ----------
 async function processTransaction(tx) {
   const { txid, sender, amount } = tx;
@@ -238,7 +206,7 @@ async function processTransaction(tx) {
   const tier = matchPricing(amount);
   if (!tier) {
     warn(`No matching tier for ${amount} TRX from ${sender}`);
-    await refund(sender, amount, 'Invalid amount');
+    // await refund(sender, amount, 'Invalid amount');
     await recordTransaction({
       txid, sender, amount,
       status: 'refunded_invalid_amount',
@@ -252,7 +220,7 @@ async function processTransaction(tx) {
     const isNew = await isNewUsdtWallet(sender);
     if (isNew) {
       warn(`${sender} is new USDT wallet, needs 6 TRX. Refunding.`);
-      await refund(sender, amount, 'New wallet needs 6 TRX package');
+      // await refund(sender, amount, 'New wallet needs 6 TRX package');
       await recordTransaction({
         txid, sender, amount,
         status: 'refunded_new_wallet',
@@ -291,28 +259,34 @@ async function processTransaction(tx) {
   });
 }
 
-// ---------- Main loop ----------
-async function main() {
-  info('='.repeat(60));
-  info('TRON Energy Reseller Bot starting');
-  info(`Watching address: ${RECEIVE_ADDRESS}`);
-  info(`Energy provider: Netts (${NETTS_API_URL})`);
-  info(`Pricing tiers: ${Object.keys(PRICING).join(', ')} TRX`);
-  info('='.repeat(60));
+// let lastCheckMs = Date.now() - 5 * 60 * 1000;
+const date = new Date();
+date.setMonth(date.getMonth() - 1);
+let lastCheckMs = date.getTime();
 
-  let lastCheckMs = Date.now() - 5 * 60 * 1000;
+async function checkTransactions() {
+  try {
+    info('='.repeat(60));
+    info('TRON Energy Reseller Bot starting');
+    info(`Watching address: ${RECEIVE_ADDRESS}`);
+    info(`Energy provider: Netts (${NETTS_API_URL})`);
+    info(`Pricing tiers: ${Object.keys(PRICING).join(', ')} TRX`);
+    info('='.repeat(60));
 
-  while (true) {
-    try {
-      const txs = await getIncomingTransactions(RECEIVE_ADDRESS, lastCheckMs);
-      for (const tx of txs) {
-        if (await isAlreadyProcessed(tx.txid)) continue;
-        await processTransaction(tx);
-        lastCheckMs = Math.max(lastCheckMs, tx.timestampMs + 1);
-      }
-    } catch (e) {
-      error(`Main loop error: ${e.message}`);
+    const txs = await getIncomingTransactions(RECEIVE_ADDRESS, lastCheckMs);
+
+    for (const tx of txs) {
+      if (await isAlreadyProcessed(tx.txid)) continue;
+
+      await processTransaction(tx);
+
+      lastCheckMs = Math.max(lastCheckMs, tx.timestampMs + 1);
     }
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  } catch (e) {
+    error(`Cron job error in checkTransactions: ${e.message}`);
   }
 }
+
+module.exports = {
+  checkTransactions,
+};

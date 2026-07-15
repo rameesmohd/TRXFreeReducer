@@ -2,7 +2,7 @@
   "name": "eezytron-clone",
   "version": "1.0.0",
   "description": "TRON energy reseller bot - resells wholesale energy at retail markup (MongoDB)",
-  "main": "src/bot.js",
+  "main": "app.js",
   "scripts": {
     "wallet": "node src/generate_wallet.js",
     "stats": "node src/stats.js",
