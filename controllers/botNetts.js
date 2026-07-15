@@ -63,7 +63,7 @@ async function recordTransaction(data) {
         },
         $setOnInsert: { receivedAt: new Date() },
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     );
   } catch (e) {
     error(`Failed to record transaction ${data.txid}: ${e.message}`);
@@ -128,13 +128,35 @@ async function getIncomingTransactions(address, minTimestampMs) {
   return txs;
 }
 
+// function matchPricing(amount) {
+//   for (const [price, tier] of Object.entries(PRICING)) {
+//     if (Math.abs(amount - Number(price)) <= PRICE_TOLERANCE) {
+//       return { priceTrx: Number(price), ...tier };
+//     }
+//   }
+//   return null;
+// }
+
 function matchPricing(amount) {
-  for (const [price, tier] of Object.entries(PRICING)) {
-    if (Math.abs(amount - Number(price)) <= PRICE_TOLERANCE) {
-      return { priceTrx: Number(price), ...tier };
+  const prices = Object.keys(PRICING)
+    .map(Number)
+    .sort((a, b) => b - a);
+
+  let fallback = null;
+
+  for (const price of prices) {
+    // Exact match within tolerance
+    if (Math.abs(amount - price) <= PRICE_TOLERANCE) {
+      return { priceTrx: price, ...PRICING[price] };
+    }
+
+    // Save the nearest lower package
+    if (!fallback && amount >= price) {
+      fallback = { priceTrx: price, ...PRICING[price] };
     }
   }
-  return null;
+
+  return fallback;
 }
 
 async function isNewUsdtWallet(address) {
@@ -188,12 +210,17 @@ async function buyEnergyFromNetts(receiver, energyAmount) {
     }
     return { success: false, costTrx: 0, orderId: '', hash: '', errorMsg: JSON.stringify(res.data) };
   } catch (e) {
-    // Netts returns structured error bodies even on 4xx/5xx (insufficient
-    // balance, provider unavailable, duplicate-request-processing, etc).
-    const errMsg = e.response
+    const errorMsg = e.response
       ? `HTTP ${e.response.status}: ${JSON.stringify(e.response.data)}`
       : e.message;
-    return { success: false, costTrx: 0, orderId: '', hash: '', errorMsg };
+
+    return {
+      success: false,
+      costTrx: 0,
+      orderId: '',
+      hash: '',
+      errorMsg,
+    };
   }
 }
 
@@ -218,6 +245,8 @@ async function processTransaction(tx) {
   // 2. New wallet check
   if (tier.priceTrx === 3) {
     const isNew = await isNewUsdtWallet(sender);
+    console.log("is new:", isNew);
+    
     if (isNew) {
       warn(`${sender} is new USDT wallet, needs 6 TRX. Refunding.`);
       // await refund(sender, amount, 'New wallet needs 6 TRX package');
@@ -235,7 +264,7 @@ async function processTransaction(tx) {
 
   if (!result.success) {
     error(`Energy purchase failed: ${result.errorMsg}`);
-    await refund(sender, amount, 'Provider error');
+    // await refund(sender, amount, 'Provider error');
     await recordTransaction({
       txid, sender, amount,
       status: 'refunded_provider_error',
@@ -267,10 +296,7 @@ let lastCheckMs = date.getTime();
 async function checkTransactions() {
   try {
     info('='.repeat(60));
-    info('TRON Energy Reseller Bot starting');
     info(`Watching address: ${RECEIVE_ADDRESS}`);
-    info(`Energy provider: Netts (${NETTS_API_URL})`);
-    info(`Pricing tiers: ${Object.keys(PRICING).join(', ')} TRX`);
     info('='.repeat(60));
 
     const txs = await getIncomingTransactions(RECEIVE_ADDRESS, lastCheckMs);
