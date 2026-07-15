@@ -94,7 +94,7 @@ async function getIncomingTransactions(address, minTimestampMs) {
     error(`TronGrid fetch failed: ${e.message}`);
     return [];
   }
-  console.log(data);
+  // console.log(data);
   
   const txs = [];
   for (const tx of data) {
