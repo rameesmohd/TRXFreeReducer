@@ -288,10 +288,10 @@ async function processTransaction(tx) {
   });
 }
 
-// let lastCheckMs = Date.now() - 5 * 60 * 1000;
-const date = new Date();
-date.setMonth(date.getMonth() - 1);
-let lastCheckMs = date.getTime();
+let lastCheckMs = Date.now() - 5 * 60 * 1000;
+// const date = new Date();
+// date.setMonth(date.getMonth() - 1);
+// let lastCheckMs = date.getTime();
 
 async function checkTransactions() {
   try {
