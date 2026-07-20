@@ -2,6 +2,7 @@ const { TronWeb } = require('tronweb');
 const axios =require('axios');
 const fs =require ('fs');
 const Transaction =require('../models/Transaction.js');
+const { notifyFundReceived, notifyPurchase, notifySuccess, notifyFailure } = require('./notifications.js');
 require('dotenv/config');
 
 // ---------- Configuration ----------
@@ -94,7 +95,6 @@ async function getIncomingTransactions(address, minTimestampMs) {
     error(`TronGrid fetch failed: ${e.message}`);
     return [];
   }
-  // console.log(data);
   
   const txs = [];
   for (const tx of data) {
@@ -232,12 +232,14 @@ async function processTransaction(tx) {
   // 1. Match pricing tier
   const tier = matchPricing(amount);
   if (!tier) {
+    const reason = `No tier for ${amount} TRX`;
     warn(`No matching tier for ${amount} TRX from ${sender}`);
     // await refund(sender, amount, 'Invalid amount');
+    await notifyFailure(sender, amount, reason, txid);
     await recordTransaction({
       txid, sender, amount,
       status: 'refunded_invalid_amount',
-      error: `No tier for ${amount} TRX`,
+      error: reason,
     });
     return;
   }
@@ -250,6 +252,7 @@ async function processTransaction(tx) {
     if (isNew) {
       warn(`${sender} is new USDT wallet, needs 6 TRX. Refunding.`);
       // await refund(sender, amount, 'New wallet needs 6 TRX package');
+      await notifyFailure(sender, amount, 'New/exchange wallet — needs 6 TRX package', txid);
       await recordTransaction({
         txid, sender, amount,
         status: 'refunded_new_wallet',
@@ -265,6 +268,7 @@ async function processTransaction(tx) {
   if (!result.success) {
     error(`Energy purchase failed: ${result.errorMsg}`);
     // await refund(sender, amount, 'Provider error');
+    await notifyFailure(sender, amount, result.errorMsg, txid);
     await recordTransaction({
       txid, sender, amount,
       status: 'refunded_provider_error',
@@ -277,6 +281,8 @@ async function processTransaction(tx) {
   const profit = amount - result.costTrx;
   info(`✓ Delivered ${tier.energy} energy to ${sender} (order ${result.orderId}). ` +
        `Revenue: ${amount} TRX, Cost: ${result.costTrx} TRX, Profit: ${profit.toFixed(3)} TRX`);
+  await notifyPurchase(sender, tier.energy, result.costTrx, result.orderId);
+  await notifySuccess(sender, amount, tier.energy, result.costTrx, profit, result.orderId, txid);
   await recordTransaction({
     txid, sender, amount,
     status: 'delivered',
@@ -303,7 +309,8 @@ async function checkTransactions() {
 
     for (const tx of txs) {
       if (await isAlreadyProcessed(tx.txid)) continue;
-
+      
+      await notifyFundReceived(tx.sender, tx.amount, tx.txid);
       await processTransaction(tx);
 
       lastCheckMs = Math.max(lastCheckMs, tx.timestampMs + 1);
