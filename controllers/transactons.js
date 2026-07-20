@@ -18,9 +18,9 @@ const USDT_CONTRACT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 // Netts order 1h minimum is 61,000 energy, so all tiers below clear that floor.
 const PRICING = {
   2:  { energy:  65_000, label: '1 tx (existing wallet)' },
-  4:  { energy: 131_000, label: '2  txs (new/exchange wallet)' },
-  10: { energy: 325_000, label: '~5  txs' },
-  20: { energy: 650_000, label: '~10  txs' },
+  4:  { energy: 131_000, label: '2 txs (new/exchange wallet)' },
+  10: { energy: 325_000, label: '5 txs' },
+  20: { energy: 650_000, label: '10 txs' },
 };
 const PRICE_TOLERANCE = 0.05
 
