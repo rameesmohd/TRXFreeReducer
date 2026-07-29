@@ -7,6 +7,7 @@ const app = express();
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const cookieParser = require("cookie-parser");
+const user = require('./route/user.js');
 
 dotenv.config();
 connectDB()
@@ -58,14 +59,13 @@ require('./cron/checkTransaction.js');
 
 const apiLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
-  max: 500, 
+  max: 50, 
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 app.use('/api', apiLimiter);
-
-//Routes    
+app.use('/api/user', user);
 
 app.use((err, req, res, next) => {
   if (err.message === "Not allowed by CORS") {

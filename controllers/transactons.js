@@ -320,6 +320,15 @@ async function checkTransactions() {
   }
 }
 
+// Backend only
+const purchaseEnergy = async (req, res) => {
+  const { receiver, energyAmount } = req.body;
+
+  const result = await buyEnergyFromNetts(receiver, energyAmount);
+  res.json(result);
+};
+
 module.exports = {
   checkTransactions,
+  purchaseEnergy,
 };
