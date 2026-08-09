@@ -320,12 +320,98 @@ async function checkTransactions() {
   }
 }
 
-// Backend only
+
+// // Backend only
+// const purchaseEnergy = async (req, res) => {
+//   const { receiver, energyAmount } = req.body;
+
+//   const result = await buyEnergyFromNetts(receiver, energyAmount);
+//   res.json(result);
+// };
+
+// In-memory lock — prevents a retried/duplicate request for the same
+// receiver from firing a second real Netts order while the first is
+// still being processed.
+const inFlightPurchases = new Map(); // receiver -> Promise
+
+/**
+ * Poll Netts' order_check endpoint until the on-chain delegation hash
+ * is confirmed, or give up after `retries` attempts.
+ * Docs: https://doc.netts.io/api/v2/endpoints/order_check.html
+ *
+ * NOTE: I'm inferring the response shape (`detail.data.hash`) from the
+ * comment already in your buyEnergyFromNetts code — verify the actual
+ * field names against Netts' order_check docs before relying on this.
+ */
+async function waitForOrderConfirmation(orderId, { retries = 6, delayMs = 5000 } = {}) {
+  for (let i = 0; i < retries; i++) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    try {
+      const res = await axios.get(`${NETTS_API_URL}/apiv2/order_check`, {
+        params: { orderId },
+        headers: {
+          'X-API-KEY': NETTS_API_KEY,
+          'X-Real-IP': NETTS_WHITELISTED_IP,
+        },
+        timeout: 10000,
+      });
+      const data = res.data?.detail?.data;
+      if (data?.hash) {
+        return { confirmed: true, hash: data.hash };
+      }
+    } catch (e) {
+      warn(`order_check failed for order ${orderId} (attempt ${i + 1}): ${e.message}`);
+    }
+  }
+  return { confirmed: false, hash: '' };
+}
+
 const purchaseEnergy = async (req, res) => {
   const { receiver, energyAmount } = req.body;
 
-  const result = await buyEnergyFromNetts(receiver, energyAmount);
-  res.json(result);
+  if (!receiver || !energyAmount) {
+    return res.status(400).json({ error: 'receiver and energyAmount are required' });
+  }
+
+  // Reject a second call for the same receiver while one is already running
+  if (inFlightPurchases.has(receiver)) {
+    return res.status(409).json({ error: 'A purchase for this receiver is already in progress' });
+  }
+
+  const purchasePromise = (async () => {
+    const result = await buyEnergyFromNetts(receiver, energyAmount);
+
+    if (!result.success) {
+      return result; // order was never placed, nothing to confirm
+    }
+    if (result.hash) {
+      return result; // Netts already returned a confirmed hash immediately
+    }
+
+    // Order accepted but not yet confirmed on-chain — hold here instead
+    // of responding "success" prematurely.
+    const confirmation = await waitForOrderConfirmation(result.orderId);
+
+    return {
+      ...result,
+      hash: confirmation.hash,
+      success: confirmation.confirmed, // downgrade to false if it never confirmed
+      errorMsg: confirmation.confirmed
+        ? null
+        : 'Order accepted by Netts but not confirmed on-chain within timeout',
+    };
+  })();
+
+  inFlightPurchases.set(receiver, purchasePromise);
+
+  try {
+    const result = await purchasePromise;
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    inFlightPurchases.delete(receiver);
+  }
 };
 
 module.exports = {
