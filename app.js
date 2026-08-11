@@ -12,6 +12,11 @@ const user = require('./route/user.js');
 dotenv.config();
 connectDB()
 
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 app.use(helmet({
   contentSecurityPolicy:false,
   crossOriginEmbedderPolicy: true,
@@ -31,11 +36,6 @@ app.use(helmet({
 }));
 
 app.set('trust proxy', 1);
-
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(",").map(o => o.trim())
-  : [];
-
 const corsOptions = {
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
