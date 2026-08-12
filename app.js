@@ -43,6 +43,7 @@ const corsOptions = {
     if (
       allowedOrigins.includes(origin) || origin.startsWith("https://web.telegram.org")
     ) {
+      console.log(`✅ CORS allowed request from: ${origin}`);
       return callback(null, true);
     }
 
