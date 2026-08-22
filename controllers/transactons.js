@@ -353,6 +353,10 @@ async function checkTransactions() {
     const txs = await getIncomingTransactions(RECEIVE_ADDRESS, queryMinTimestamp);
 
     for (const tx of txs) {
+      if (tx.timestampMs && tx.timestampMs > lastCheckMs) {
+        lastCheckMs = tx.timestampMs;
+      }
+
       const claimed = await claimTransaction(tx);
       if (!claimed) continue;
 
@@ -370,10 +374,6 @@ async function checkTransactions() {
         });
       } finally {
         activeProcessingTxids.delete(tx.txid);
-      }
-
-      if (tx.timestampMs && tx.timestampMs > lastCheckMs) {
-        lastCheckMs = tx.timestampMs;
       }
     }
   } catch (e) {
