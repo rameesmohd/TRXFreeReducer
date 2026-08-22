@@ -107,7 +107,7 @@ async function claimTransaction(tx) {
           receivedAt: new Date(),
         },
       },
-      { upsert: true, new: false }
+      { upsert: true, returnDocument: 'before' }
     );
 
     if (existing) {
@@ -122,10 +122,31 @@ async function claimTransaction(tx) {
   }
 }
 
+// Parse one or more TronGrid API keys (comma-separated for key rotation if provided)
+const TRONGRID_API_KEYS = (process.env.TRONGRID_API_KEY || '')
+  .split(',')
+  .map(k => k.trim())
+  .filter(Boolean);
+let currentKeyIndex = 0;
+let rateLimitBackoffUntil = 0;
+
+function getNextTronGridApiKey() {
+  if (TRONGRID_API_KEYS.length === 0) return null;
+  const key = TRONGRID_API_KEYS[currentKeyIndex % TRONGRID_API_KEYS.length];
+  currentKeyIndex++;
+  return key;
+}
+
 // ---------- Helpers ----------
 async function getIncomingTransactions(address, minTimestampMs) {
+  // If we recently hit a 429, respect backoff
+  if (Date.now() < rateLimitBackoffUntil) {
+    return [];
+  }
+
   const url = `https://api.trongrid.io/v1/accounts/${address}/transactions`;
-  const headers = TRONGRID_API_KEY ? { 'TRON-PRO-API-KEY': TRONGRID_API_KEY } : {};
+  const apiKey = getNextTronGridApiKey();
+  const headers = apiKey ? { 'TRON-PRO-API-KEY': apiKey } : {};
   const params = {
     only_to: true,
     only_confirmed: false, // Instant detection (1-3s) without waiting for block finality
@@ -139,7 +160,17 @@ async function getIncomingTransactions(address, minTimestampMs) {
     const res = await axios.get(url, { headers, params, timeout: 8000 });
     data = res.data.data || [];
   } catch (e) {
-    warn(`TronGrid fetch failed: ${e.message}`);
+    if (e.response && e.response.status === 429) {
+      rateLimitBackoffUntil = Date.now() + 5000; // back off for 5s
+      warn(
+        `TronGrid 429 (Rate Limit Exceeded). ` +
+        (TRONGRID_API_KEYS.length === 0
+          ? `Add a free TRONGRID_API_KEY in .env from https://www.trongrid.io to increase rate limits to 100,000 req/day.`
+          : `Backing off for 5s.`)
+      );
+    } else {
+      warn(`TronGrid fetch failed: ${e.message}`);
+    }
     return [];
   }
   
