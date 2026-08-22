@@ -18,30 +18,25 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
   .filter(Boolean);
 
 app.use(helmet({
-  contentSecurityPolicy:false,
-  crossOriginEmbedderPolicy: true,
-  crossOriginOpenerPolicy: true,
-  crossOriginResourcePolicy: { policy: "same-origin" },
-  dnsPrefetchControl: { allow: false },
-  expectCt: { maxAge: 86400 },
-  frameguard: { action: 'deny' },
-  hidePoweredBy: true,
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: { policy: "same-origin" },
+  crossOriginResourcePolicy: { policy: "cross-origin" },
   hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
-  ieNoOpen: true,
+  frameguard: { action: "deny" },
+  hidePoweredBy: true,
   noSniff: true,
-  originAgentCluster: true,
-  permittedCrossDomainPolicies: { policy: "none" },
   referrerPolicy: { policy: "no-referrer" },
-  xssFilter: true
 }));
 
 app.set('trust proxy', 1);
+
 const corsOptions = {
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
 
     if (
-      allowedOrigins.includes(origin) || origin.startsWith("https://web.telegram.org")
+      allowedOrigins.includes(origin)
     ) {
       console.log(`✅ CORS allowed request from: ${origin}`);
       return callback(null, true);
@@ -71,6 +66,7 @@ const apiLimiter = rateLimit({
 });
 
 app.use('/api', apiLimiter);
+
 app.use('/api/user', user);
 
 app.use((err, req, res, next) => {

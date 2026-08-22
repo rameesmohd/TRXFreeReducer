@@ -1,19 +1,36 @@
 const cron = require('node-cron');
 const { checkTransactions } = require('../controllers/transactons');
 
-async function main() {
+const POLL_INTERVAL_MS = 1500; // 1.5 seconds between polling checks
+let isLoopRunning = false;
 
-  // Run immediately on startup
-  await checkTransactions();
+async function pollLoop() {
+  if (isLoopRunning) return;
+  isLoopRunning = true;
 
-  // Schedule to run every 10 seconds
-  cron.schedule('*/10 * * * * *', async () => {
+  try {
     await checkTransactions();
-  });
+  } catch (err) {
+    console.error('Error during transaction check loop:', err);
+  } finally {
+    isLoopRunning = false;
+    setTimeout(pollLoop, POLL_INTERVAL_MS);
+  }
+}
 
-  console.log('Cron job scheduled (every 10 seconds)');
+async function main() {
+  console.log(`Starting real-time transaction monitor (${POLL_INTERVAL_MS}ms interval)...`);
+  pollLoop();
+
+  // Watchdog heartbeat every 30 seconds to ensure loop resilience
+  cron.schedule('*/30 * * * * *', async () => {
+    if (!isLoopRunning) {
+      pollLoop();
+    }
+  });
 }
 
 main();
+
 
 

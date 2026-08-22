@@ -17,12 +17,16 @@ const USDT_CONTRACT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 // Pricing table: TRX received → energy delivered (1 hour rental)
 // Netts order 1h minimum is 61,000 energy, so all tiers below clear that floor.
 const PRICING = {
-  2:  { energy:  65_000, label: '1 tx (existing wallet)' },
-  4:  { energy: 131_000, label: '2 txs (new/exchange wallet)' },
-  10: { energy: 325_000, label: '5 txs' },
-  20: { energy: 650_000, label: '10 txs' },
+  0.1: { energy:  65_000, label: '1 tx (0.1 TRX promo / 65k)' },
+  2:   { energy:  65_000, label: '1 tx (existing wallet)' },
+  4:   { energy: 131_000, label: '2 txs (new/exchange wallet)' },
+  10:  { energy: 325_000, label: '5 txs' },
+  20:  { energy: 650_000, label: '10 txs' },
 };
 const PRICE_TOLERANCE = 0.05
+
+// In-memory set of txids currently being processed to prevent concurrent duplicate runs
+const activeProcessingTxids = new Set();
 
 // ---------- Logging ----------
 fs.mkdirSync('logs', { recursive: true });
@@ -72,8 +76,50 @@ async function recordTransaction(data) {
 }
 
 async function isAlreadyProcessed(txid) {
+  if (activeProcessingTxids.has(txid)) return true;
   const doc = await Transaction.findOne({ txid }, { projection: { _id: 1 } });
   return !!doc;
+}
+
+/**
+ * Atomically reserves/claims a transaction to prevent duplicate concurrent processing.
+ * Returns true if this process successfully claimed the transaction.
+ */
+async function claimTransaction(tx) {
+  const { txid, sender, amount } = tx;
+
+  if (activeProcessingTxids.has(txid)) {
+    return false;
+  }
+
+  activeProcessingTxids.add(txid);
+
+  try {
+    // Atomic insert/lock using unique index on txid
+    const existing = await Transaction.findOneAndUpdate(
+      { txid },
+      {
+        $setOnInsert: {
+          txid,
+          sender,
+          amountTrx: amount,
+          status: 'processing',
+          receivedAt: new Date(),
+        },
+      },
+      { upsert: true, new: false }
+    );
+
+    if (existing) {
+      activeProcessingTxids.delete(txid);
+      return false; // Already existed in DB
+    }
+
+    return true;
+  } catch (e) {
+    activeProcessingTxids.delete(txid);
+    return false;
+  }
 }
 
 // ---------- Helpers ----------
@@ -82,17 +128,18 @@ async function getIncomingTransactions(address, minTimestampMs) {
   const headers = TRONGRID_API_KEY ? { 'TRON-PRO-API-KEY': TRONGRID_API_KEY } : {};
   const params = {
     only_to: true,
-    only_confirmed: true,
+    only_confirmed: false, // Instant detection (1-3s) without waiting for block finality
     limit: 50,
     min_timestamp: minTimestampMs,
+    order_by: 'block_timestamp,desc',
   };
 
   let data;
   try {
-    const res = await axios.get(url, { headers, params, timeout: 15000 });
+    const res = await axios.get(url, { headers, params, timeout: 8000 });
     data = res.data.data || [];
   } catch (e) {
-    error(`TronGrid fetch failed: ${e.message}`);
+    warn(`TronGrid fetch failed: ${e.message}`);
     return [];
   }
   
@@ -295,28 +342,44 @@ async function processTransaction(tx) {
 }
 
 let lastCheckMs = Date.now() - 5 * 60 * 1000;
-// const date = new Date();
-// date.setMonth(date.getMonth() - 1);
-// let lastCheckMs = date.getTime();
+let isCheckRunning = false;
 
 async function checkTransactions() {
-  try {
-    info('='.repeat(60));
-    info(`Watching address: ${RECEIVE_ADDRESS}`);
-    info('='.repeat(60));
+  if (isCheckRunning) return;
+  isCheckRunning = true;
 
-    const txs = await getIncomingTransactions(RECEIVE_ADDRESS, lastCheckMs);
+  try {
+    const queryMinTimestamp = Math.max(lastCheckMs - 60 * 1000, Date.now() - 5 * 60 * 1000);
+    const txs = await getIncomingTransactions(RECEIVE_ADDRESS, queryMinTimestamp);
 
     for (const tx of txs) {
-      if (await isAlreadyProcessed(tx.txid)) continue;
-      
-      await notifyFundReceived(tx.sender, tx.amount, tx.txid);
-      await processTransaction(tx);
+      const claimed = await claimTransaction(tx);
+      if (!claimed) continue;
 
-      lastCheckMs = Math.max(lastCheckMs, tx.timestampMs + 1);
+      try {
+        await notifyFundReceived(tx.sender, tx.amount, tx.txid);
+        await processTransaction(tx);
+      } catch (err) {
+        error(`Unexpected error processing ${tx.txid}: ${err.message}`);
+        await recordTransaction({
+          txid: tx.txid,
+          sender: tx.sender,
+          amount: tx.amount,
+          status: 'error_unhandled',
+          error: err.message,
+        });
+      } finally {
+        activeProcessingTxids.delete(tx.txid);
+      }
+
+      if (tx.timestampMs && tx.timestampMs > lastCheckMs) {
+        lastCheckMs = tx.timestampMs;
+      }
     }
   } catch (e) {
     error(`Cron job error in checkTransactions: ${e.message}`);
+  } finally {
+    isCheckRunning = false;
   }
 }
 
