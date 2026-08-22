@@ -149,7 +149,7 @@ async function getIncomingTransactions(address, minTimestampMs) {
   const headers = apiKey ? { 'TRON-PRO-API-KEY': apiKey } : {};
   const params = {
     only_to: true,
-    only_confirmed: false, // Instant detection (1-3s) without waiting for block finality
+    only_confirmed: false, // Fast detection (2-5s) without waiting for block finality
     limit: 50,
     min_timestamp: minTimestampMs,
     order_by: 'block_timestamp,desc',
