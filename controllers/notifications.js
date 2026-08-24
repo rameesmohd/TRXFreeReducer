@@ -52,7 +52,11 @@ async function notifyPurchase(sender, energyAmount, costTrx, orderId) {
 }
 
 // 3a. Full delivery succeeded
-async function notifySuccess(sender, amountTrx, energyAmount, costTrx, profitTrx, orderId, txid) {
+async function notifySuccess(sender, amountTrx, energyAmount, costTrx, profitTrx, orderId, txid, nettsBalance) {
+  const balanceText = nettsBalance != null
+    ? `Netts Balance: ${typeof nettsBalance === 'number' ? nettsBalance.toFixed(2) : nettsBalance} TRX\n`
+    : '';
+
   const text =
     `✅ Delivery Success\n` +
     `Receiver: ${sender}\n` +
@@ -60,18 +64,24 @@ async function notifySuccess(sender, amountTrx, energyAmount, costTrx, profitTrx
     `Revenue: ${amountTrx} TRX\n` +
     `Cost: ${costTrx} TRX\n` +
     `Profit: ${profitTrx.toFixed(3)} TRX\n` +
+    balanceText +
     `Order: ${orderId || 'N/A'}\n` +
     `Tx: ${txid}`;
   await sendTelegramMessage(text);
 }
 
 // 3b. Delivery failed (bad amount, new wallet, provider error, etc.)
-async function notifyFailure(sender, amountTrx, reason, txid) {
+async function notifyFailure(sender, amountTrx, reason, txid, nettsBalance) {
+  const balanceText = nettsBalance != null
+    ? `Netts Balance: ${typeof nettsBalance === 'number' ? nettsBalance.toFixed(2) : nettsBalance} TRX\n`
+    : '';
+
   const text =
     `🔴 Delivery Failed\n` +
     `Sender: ${sender}\n` +
     `Amount: ${amountTrx} TRX\n` +
     `Reason: ${reason}\n` +
+    balanceText +
     `Tx: ${txid}`;
   await sendTelegramMessage(text);
 }

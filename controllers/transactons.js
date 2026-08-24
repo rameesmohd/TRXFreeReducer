@@ -302,6 +302,33 @@ async function buyEnergyFromNetts(receiver, energyAmount) {
   }
 }
 
+/**
+ * Fetch the current user balance from Netts.
+ * GET /apiv2/userinfo
+ * Docs: https://doc.netts.io/api/v2/endpoints/userinfo.html
+ */
+async function getNettsBalance() {
+  const url = `${NETTS_API_URL}/apiv2/userinfo`;
+  try {
+    const res = await axios.get(url, {
+      headers: {
+        'X-API-KEY': NETTS_API_KEY,
+        'X-Real-IP': NETTS_WHITELISTED_IP,
+      },
+      timeout: 10000,
+    });
+
+    const balance = res.data?.stats?.balance;
+    if (balance !== undefined && balance !== null) {
+      return Number(balance);
+    }
+    return null;
+  } catch (e) {
+    warn(`Failed to fetch Netts balance: ${e.message}`);
+    return null;
+  }
+}
+
 // ---------- Main processing ----------
 async function processTransaction(tx) {
   const { txid, sender, amount } = tx;
@@ -313,7 +340,8 @@ async function processTransaction(tx) {
     const reason = `No tier for ${amount} TRX`;
     warn(`No matching tier for ${amount} TRX from ${sender}`);
     // await refund(sender, amount, 'Invalid amount');
-    await notifyFailure(sender, amount, reason, txid);
+    const nettsBalance = await getNettsBalance();
+    await notifyFailure(sender, amount, reason, txid, nettsBalance);
     await recordTransaction({
       txid, sender, amount,
       status: 'refunded_invalid_amount',
@@ -330,7 +358,8 @@ async function processTransaction(tx) {
     if (isNew) {
       warn(`${sender} is new USDT wallet, needs 6 TRX. Refunding.`);
       // await refund(sender, amount, 'New wallet needs 6 TRX package');
-      await notifyFailure(sender, amount, 'New/exchange wallet — needs 6 TRX package', txid);
+      const nettsBalance = await getNettsBalance();
+      await notifyFailure(sender, amount, 'New/exchange wallet — needs 6 TRX package', txid, nettsBalance);
       await recordTransaction({
         txid, sender, amount,
         status: 'refunded_new_wallet',
@@ -346,7 +375,8 @@ async function processTransaction(tx) {
   if (!result.success) {
     error(`Energy purchase failed: ${result.errorMsg}`);
     // await refund(sender, amount, 'Provider error');
-    await notifyFailure(sender, amount, result.errorMsg, txid);
+    const nettsBalance = await getNettsBalance();
+    await notifyFailure(sender, amount, result.errorMsg, txid, nettsBalance);
     await recordTransaction({
       txid, sender, amount,
       status: 'refunded_provider_error',
@@ -359,8 +389,9 @@ async function processTransaction(tx) {
   const profit = amount - result.costTrx;
   info(`✓ Delivered ${tier.energy} energy to ${sender} (order ${result.orderId}). ` +
        `Revenue: ${amount} TRX, Cost: ${result.costTrx} TRX, Profit: ${profit.toFixed(3)} TRX`);
+  const nettsBalance = await getNettsBalance();
   await notifyPurchase(sender, tier.energy, result.costTrx, result.orderId);
-  await notifySuccess(sender, amount, tier.energy, result.costTrx, profit, result.orderId, txid);
+  await notifySuccess(sender, amount, tier.energy, result.costTrx, profit, result.orderId, txid, nettsBalance);
   await recordTransaction({
     txid, sender, amount,
     status: 'delivered',
@@ -378,7 +409,7 @@ let isCheckRunning = false;
 async function checkTransactions() {
   if (isCheckRunning) return;
   isCheckRunning = true;
-
+ 
   try {
     const queryMinTimestamp = Math.max(lastCheckMs - 60 * 1000, Date.now() - 5 * 60 * 1000);
     const txs = await getIncomingTransactions(RECEIVE_ADDRESS, queryMinTimestamp);
@@ -511,4 +542,5 @@ const purchaseEnergy = async (req, res) => {
 module.exports = {
   checkTransactions,
   purchaseEnergy,
+  getNettsBalance,
 };
