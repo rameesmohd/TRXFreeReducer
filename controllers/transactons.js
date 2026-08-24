@@ -523,7 +523,7 @@ const purchaseEnergy = async (req, res) => {
       success: confirmation.confirmed, // downgrade to false if it never confirmed
       errorMsg: confirmation.confirmed
         ? null
-        : 'Order accepted by Netts but not confirmed on-chain within timeout',
+        : 'Order accepted but not confirmed on-chain within timeout',
     };
   })();
 

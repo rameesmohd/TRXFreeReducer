@@ -54,7 +54,7 @@ async function notifyPurchase(sender, energyAmount, costTrx, orderId) {
 // 3a. Full delivery succeeded
 async function notifySuccess(sender, amountTrx, energyAmount, costTrx, profitTrx, orderId, txid, nettsBalance) {
   const balanceText = nettsBalance != null
-    ? `Netts Balance: ${typeof nettsBalance === 'number' ? nettsBalance.toFixed(2) : nettsBalance} TRX\n`
+    ? ` Balance: ${typeof nettsBalance === 'number' ? nettsBalance.toFixed(2) : nettsBalance} TRX\n`
     : '';
 
   const text =
@@ -73,7 +73,7 @@ async function notifySuccess(sender, amountTrx, energyAmount, costTrx, profitTrx
 // 3b. Delivery failed (bad amount, new wallet, provider error, etc.)
 async function notifyFailure(sender, amountTrx, reason, txid, nettsBalance) {
   const balanceText = nettsBalance != null
-    ? `Netts Balance: ${typeof nettsBalance === 'number' ? nettsBalance.toFixed(2) : nettsBalance} TRX\n`
+    ? ` Balance: ${typeof nettsBalance === 'number' ? nettsBalance.toFixed(2) : nettsBalance} TRX\n`
     : '';
 
   const text =
