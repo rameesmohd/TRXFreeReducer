@@ -2,7 +2,8 @@ const { TronWeb } = require('tronweb');
 const axios =require('axios');
 const fs =require ('fs');
 const Transaction =require('../models/Transaction.js');
-const { notifyFundReceived, notifyPurchase, notifySuccess, notifyFailure } = require('./notifications.js');
+const User = require('../models/User.js');
+const { notifyFundReceived, notifyPurchase, notifySuccess, notifyFailure, sendTelegramMessage } = require('./notifications.js');
 require('dotenv/config');
 
 // ---------- Configuration ----------
@@ -329,10 +330,99 @@ async function getNettsBalance() {
   }
 }
 
+// ---------- Rate-limiting / anti-bot ----------
+const MAX_PURCHASES_PER_DAY = 10;
+const BOT_WINDOW_MS = 15 * 60 * 1000;       // 15 minutes
+const BOT_TX_THRESHOLD = 10;                 // 10 txs inside that window = bot
+
+/**
+ * Check if a sender is blocked in the DB.
+ */
+async function isSenderBlocked(address) {
+  const user = await User.findOne({ address }, { isBlocked: 1 }).lean();
+  return user?.isBlocked === true;
+}
+
+/**
+ * Mark a sender as blocked in the DB (upsert so it works for new addresses too).
+ */
+async function blockSender(address, reason) {
+  await User.findOneAndUpdate(
+    { address },
+    { $set: { isBlocked: true, blockedAt: new Date(), blockReason: reason } },
+    { upsert: true }
+  );
+}
+
+/**
+ * Returns the number of delivered transactions for `sender` today (UTC).
+ */
+async function getDailyPurchaseCount(sender) {
+  const startOfDay = new Date();
+  startOfDay.setUTCHours(0, 0, 0, 0);
+
+  return Transaction.countDocuments({
+    sender,
+    status: 'delivered',
+    processedAt: { $gte: startOfDay },
+  });
+}
+
+/**
+ * Returns the number of transactions (any status) for `sender` in the last 15 min.
+ */
+async function getRecentTxCount(sender) {
+  const windowStart = new Date(Date.now() - BOT_WINDOW_MS);
+
+  return Transaction.countDocuments({
+    sender,
+    receivedAt: { $gte: windowStart },
+  });
+}
+
 // ---------- Main processing ----------
 async function processTransaction(tx) {
   const { txid, sender, amount } = tx;
   info(`Processing ${txid}: ${amount} TRX from ${sender}`);
+
+  // ---- Bot detection: sender is already blocked ----
+  if (await isSenderBlocked(sender)) {
+    const reason = 'Blocked sender (bot detected)';
+    warn(`${reason}: ${sender}`);
+    const nettsBalance = await getNettsBalance();
+    await notifyFailure(sender, amount, reason, txid, nettsBalance);
+    await recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason });
+    return;
+  }
+
+  // ---- Bot detection: 10 txs in 15 min ----
+  const recentCount = await getRecentTxCount(sender);
+  if (recentCount >= BOT_TX_THRESHOLD) {
+    const reason = `Bot detected — ${recentCount} txs in 15 min`;
+    await blockSender(sender, reason);
+    warn(reason);
+    await sendTelegramMessage(
+      `🤖 BOT BLOCKED\n` +
+      `Sender: ${sender}\n` +
+      `Transactions in 15 min: ${recentCount}\n` +
+      `Action: All future purchases blocked`
+    );
+    const nettsBalance = await getNettsBalance();
+    await notifyFailure(sender, amount, reason, txid, nettsBalance);
+    await recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason });
+    return;
+  }
+
+  // ---- Daily purchase cap ----
+  const dailyCount = await getDailyPurchaseCount(sender);
+  if (dailyCount >= MAX_PURCHASES_PER_DAY) {
+    const reason = `Daily limit reached (${dailyCount}/${MAX_PURCHASES_PER_DAY})`;
+    warn(`${reason} for ${sender}`);
+    const nettsBalance = await getNettsBalance();
+    await notifyFailure(sender, amount, reason, txid, nettsBalance);
+    await recordTransaction({ txid, sender, amount, status: 'rejected_daily_limit', error: reason });
+    return;
+  }
 
   // 1. Match pricing tier
   const tier = matchPricing(amount);
