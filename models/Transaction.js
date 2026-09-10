@@ -19,6 +19,10 @@ const transactionSchema = new mongoose.Schema(
   { timestamps: false }
 );
 
-transactionSchema.index({ processedAt: -1 });
+transactionSchema.index({ sender: 1, processedAt: -1 });
+transactionSchema.index({ sender: 1, status: 1, processedAt: -1 }); // getDailyPurchaseCount
+transactionSchema.index({ sender: 1, receivedAt: -1 });             // getRecentTxCount
+transactionSchema.index({ status: 1, processedAt: -1 });            // Stats 24h aggregation
+transactionSchema.index({ receivedAt: -1 });                        // range scans on receivedAt
 
 module.exports = mongoose.model('Transaction', transactionSchema);

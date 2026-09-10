@@ -11,4 +11,8 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+
+
+userSchema.index({ address: 1, isBlocked: 1 }); // covered query for isSenderBlocked
+
 module.exports = mongoose.model('User', userSchema);
