@@ -334,6 +334,8 @@ async function getNettsBalance() {
 const MAX_PURCHASES_PER_DAY = 10;
 const BOT_WINDOW_MS = 15 * 60 * 1000;       // 15 minutes
 const BOT_TX_THRESHOLD = 10;                 // 10 txs inside that window = bot
+const MICRO_GLOBAL_LIMIT = 60;               // max 0.1 TRX deliveries per hour (all addresses)
+const MICRO_GLOBAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * Check if a sender is blocked in the DB.
@@ -377,6 +379,19 @@ async function getRecentTxCount(sender) {
   return Transaction.countDocuments({
     sender,
     receivedAt: { $gte: windowStart },
+  });
+}
+
+/**
+ * Returns the number of delivered 0.1 TRX transactions in the last hour (all addresses).
+ * Used to cap the micro tier globally and limit bot-farm damage.
+ */
+async function getMicroTierGlobalCount() {
+  const since = new Date(Date.now() - MICRO_GLOBAL_WINDOW_MS);
+  return Transaction.countDocuments({
+    amountTrx: { $lte: 0.15 },
+    status: 'delivered',
+    processedAt: { $gte: since },
   });
 }
 
@@ -440,7 +455,20 @@ async function processTransaction(tx) {
     return;
   }
 
-  // 2. New wallet check
+  // 2. Global cap on 0.1 TRX tier (catches multi-wallet bot farms)
+  if (tier.priceTrx === 0.1) {
+    const globalCount = await getMicroTierGlobalCount();
+    if (globalCount >= MICRO_GLOBAL_LIMIT) {
+      const reason = `0.1 TRX tier temporarily paused (${globalCount}/${MICRO_GLOBAL_LIMIT} per hour)`;
+      warn(reason);
+      const nettsBalance = await getNettsBalance();
+      await notifyFailure(sender, amount, reason, txid, nettsBalance);
+      await recordTransaction({ txid, sender, amount, status: 'rejected_global_cap', error: reason });
+      return;
+    }
+  }
+
+  // 3. New wallet check
   if (tier.priceTrx === 3) {
     const isNew = await isNewUsdtWallet(sender);
     console.log("is new:", isNew);
