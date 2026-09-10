@@ -395,6 +395,36 @@ async function getMicroTierGlobalCount() {
   });
 }
 
+/**
+ * Detect bots by checking if a sender's recent transactions have suspiciously
+ * uniform time gaps. Humans have irregular timing; bots send at fixed intervals.
+ * Returns true if the coefficient of variation of gaps is below 15%.
+ * Needs at least 4 recent txs (3 gaps) to make a judgment.
+ */
+async function hasUniformTiming(sender) {
+  const windowStart = new Date(Date.now() - 30 * 60 * 1000); // last 30 min
+  const recentTxs = await Transaction.find(
+    { sender, receivedAt: { $gte: windowStart } },
+    { receivedAt: 1 }
+  ).sort({ receivedAt: 1 }).limit(10).lean();
+
+  if (recentTxs.length < 4) return false; // not enough data
+
+  const gaps = [];
+  for (let i = 1; i < recentTxs.length; i++) {
+    gaps.push(recentTxs[i].receivedAt.getTime() - recentTxs[i - 1].receivedAt.getTime());
+  }
+
+  const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  if (mean < 1000) return false; // sub-second gaps, handled by other checks
+
+  const variance = gaps.reduce((sum, g) => sum + (g - mean) ** 2, 0) / gaps.length;
+  const stddev = Math.sqrt(variance);
+  const cv = stddev / mean; // coefficient of variation
+
+  return cv < 0.15; // less than 15% variation = suspiciously uniform
+}
+
 // ---------- Main processing ----------
 async function processTransaction(tx) {
   const { txid, sender, amount } = tx;
@@ -420,6 +450,22 @@ async function processTransaction(tx) {
       `🤖 BOT BLOCKED\n` +
       `Sender: ${sender}\n` +
       `Transactions in 15 min: ${recentCount}\n` +
+      `Action: All future purchases blocked`
+    );
+    const nettsBalance = await getNettsBalance();
+    await notifyFailure(sender, amount, reason, txid, nettsBalance);
+    await recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason });
+    return;
+  }
+
+  // ---- Bot detection: uniform timing pattern ----
+  if (await hasUniformTiming(sender)) {
+    const reason = 'Bot detected — uniform transaction timing';
+    await blockSender(sender, reason);
+    warn(`${reason}: ${sender}`);
+    await sendTelegramMessage(
+      `🤖 BOT BLOCKED (uniform timing)\n` +
+      `Sender: ${sender}\n` +
       `Action: All future purchases blocked`
     );
     const nettsBalance = await getNettsBalance();
