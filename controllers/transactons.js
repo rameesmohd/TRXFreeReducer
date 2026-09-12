@@ -30,13 +30,9 @@ const PRICE_TOLERANCE = 0.05
 const activeProcessingTxids = new Set();
 
 // ---------- Logging ----------
-fs.mkdirSync('logs', { recursive: true });
-const LOG_FILE = 'logs/bot.log';
-
 function log(level, msg) {
   const line = `${new Date().toISOString()} [${level}] ${msg}`;
   console.log(line);
-  fs.appendFileSync(LOG_FILE, line + '\n');
 }
 const info  = (m) => log('INFO', m);
 const warn  = (m) => log('WARN', m);
@@ -334,7 +330,7 @@ async function getNettsBalance() {
 const MAX_PURCHASES_PER_DAY = 10;
 const BOT_WINDOW_MS = 15 * 60 * 1000;       // 15 minutes
 const BOT_TX_THRESHOLD = 10;                 // 10 txs inside that window = bot
-const MICRO_GLOBAL_LIMIT = 60;               // max 0.1 TRX deliveries per hour (all addresses)
+const MICRO_GLOBAL_LIMIT = 100;               // max 0.1 TRX deliveries per hour (all addresses)
 const MICRO_GLOBAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 /**
@@ -430,88 +426,109 @@ async function processTransaction(tx) {
   const { txid, sender, amount } = tx;
   info(`Processing ${txid}: ${amount} TRX from ${sender}`);
 
-  // ---- Bot detection: sender is already blocked ----
-  if (await isSenderBlocked(sender)) {
-    const reason = 'Blocked sender (bot detected)';
-    warn(`${reason}: ${sender}`);
-    const nettsBalance = await getNettsBalance();
-    await notifyFailure(sender, amount, reason, txid, nettsBalance);
-    await recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason });
-    return;
-  }
-
-  // ---- Bot detection: 10 txs in 15 min ----
-  const recentCount = await getRecentTxCount(sender);
-  if (recentCount >= BOT_TX_THRESHOLD) {
-    const reason = `Bot detected — ${recentCount} txs in 15 min`;
-    await blockSender(sender, reason);
-    warn(reason);
-    await sendTelegramMessage(
-      `🤖 BOT BLOCKED\n` +
-      `Sender: ${sender}\n` +
-      `Transactions in 15 min: ${recentCount}\n` +
-      `Action: All future purchases blocked`
-    );
-    const nettsBalance = await getNettsBalance();
-    await notifyFailure(sender, amount, reason, txid, nettsBalance);
-    await recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason });
-    return;
-  }
-
-  // ---- Bot detection: uniform timing pattern ----
-  if (await hasUniformTiming(sender)) {
-    const reason = 'Bot detected — uniform transaction timing';
-    await blockSender(sender, reason);
-    warn(`${reason}: ${sender}`);
-    await sendTelegramMessage(
-      `🤖 BOT BLOCKED (uniform timing)\n` +
-      `Sender: ${sender}\n` +
-      `Action: All future purchases blocked`
-    );
-    const nettsBalance = await getNettsBalance();
-    await notifyFailure(sender, amount, reason, txid, nettsBalance);
-    await recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason });
-    return;
-  }
-
-  // ---- Daily purchase cap ----
-  const dailyCount = await getDailyPurchaseCount(sender);
-  if (dailyCount >= MAX_PURCHASES_PER_DAY) {
-    const reason = `Daily limit reached (${dailyCount}/${MAX_PURCHASES_PER_DAY})`;
-    warn(`${reason} for ${sender}`);
-    const nettsBalance = await getNettsBalance();
-    await notifyFailure(sender, amount, reason, txid, nettsBalance);
-    await recordTransaction({ txid, sender, amount, status: 'rejected_daily_limit', error: reason });
-    return;
-  }
-
-  // 1. Match pricing tier
+  // 1. Match pricing tier FIRST (synchronous, free) — needed to decide
+  //    whether to run the micro-tier global count check in the parallel batch.
   const tier = matchPricing(amount);
   if (!tier) {
     const reason = `No tier for ${amount} TRX`;
     warn(`No matching tier for ${amount} TRX from ${sender}`);
-    // await refund(sender, amount, 'Invalid amount');
-    const nettsBalance = await getNettsBalance();
-    await notifyFailure(sender, amount, reason, txid, nettsBalance);
-    await recordTransaction({
+    // Fire-and-forget: notification + balance are informational
+    recordTransaction({
       txid, sender, amount,
       status: 'refunded_invalid_amount',
       error: reason,
-    });
+    }).catch(e => error(`DB record fail: ${e.message}`));
+    getNettsBalance()
+      .then(bal => notifyFailure(sender, amount, reason, txid, bal))
+      .catch(() => {});
     return;
   }
 
-  // 2. Global cap on 0.1 TRX tier (catches multi-wallet bot farms)
-  if (tier.priceTrx === 0.1) {
-    const globalCount = await getMicroTierGlobalCount();
-    if (globalCount >= MICRO_GLOBAL_LIMIT) {
-      const reason = `0.1 TRX tier temporarily paused (${globalCount}/${MICRO_GLOBAL_LIMIT} per hour)`;
-      warn(reason);
-      const nettsBalance = await getNettsBalance();
-      await notifyFailure(sender, amount, reason, txid, nettsBalance);
-      await recordTransaction({ txid, sender, amount, status: 'rejected_global_cap', error: reason });
-      return;
-    }
+  // 2. Run ALL bot-detection / rate-limit DB queries in parallel
+  //    (was 5 sequential awaits — now 1 round-trip)
+  const [blocked, recentCount, uniformTiming, dailyCount, microGlobalCount] =
+    await Promise.all([
+      isSenderBlocked(sender),
+      getRecentTxCount(sender),
+      hasUniformTiming(sender),
+      getDailyPurchaseCount(sender),
+      tier.priceTrx === 0.1 ? getMicroTierGlobalCount() : Promise.resolve(0),
+    ]);
+
+  // ---- Bot detection: sender is already blocked ----
+  if (blocked) {
+    const reason = 'Blocked sender (bot detected)';
+    warn(`${reason}: ${sender}`);
+    recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason })
+      .catch(e => error(`DB record fail: ${e.message}`));
+    getNettsBalance()
+      .then(bal => notifyFailure(sender, amount, reason, txid, bal))
+      .catch(() => {});
+    return;
+  }
+
+  // ---- Bot detection: 10 txs in 15 min ----
+  if (recentCount >= BOT_TX_THRESHOLD) {
+    const reason = `Bot detected — ${recentCount} txs in 15 min`;
+    await blockSender(sender, reason);
+    warn(reason);
+    recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason })
+      .catch(e => error(`DB record fail: ${e.message}`));
+    // Fire-and-forget notifications
+    Promise.all([
+      sendTelegramMessage(
+        `🤖 BOT BLOCKED\n` +
+        `Sender: ${sender}\n` +
+        `Transactions in 15 min: ${recentCount}\n` +
+        `Action: All future purchases blocked`
+      ),
+      getNettsBalance()
+        .then(bal => notifyFailure(sender, amount, reason, txid, bal)),
+    ]).catch(() => {});
+    return;
+  }
+
+  // ---- Bot detection: uniform timing pattern ----
+  if (uniformTiming) {
+    const reason = 'Bot detected — uniform transaction timing';
+    await blockSender(sender, reason);
+    warn(`${reason}: ${sender}`);
+    recordTransaction({ txid, sender, amount, status: 'blocked_bot', error: reason })
+      .catch(e => error(`DB record fail: ${e.message}`));
+    Promise.all([
+      sendTelegramMessage(
+        `🤖 BOT BLOCKED (uniform timing)\n` +
+        `Sender: ${sender}\n` +
+        `Action: All future purchases blocked`
+      ),
+      getNettsBalance()
+        .then(bal => notifyFailure(sender, amount, reason, txid, bal)),
+    ]).catch(() => {});
+    return;
+  }
+
+  // ---- Daily purchase cap ----
+  if (dailyCount >= MAX_PURCHASES_PER_DAY) {
+    const reason = `Daily limit reached (${dailyCount}/${MAX_PURCHASES_PER_DAY})`;
+    warn(`${reason} for ${sender}`);
+    recordTransaction({ txid, sender, amount, status: 'rejected_daily_limit', error: reason })
+      .catch(e => error(`DB record fail: ${e.message}`));
+    getNettsBalance()
+      .then(bal => notifyFailure(sender, amount, reason, txid, bal))
+      .catch(() => {});
+    return;
+  }
+
+  // ---- Global cap on 0.1 TRX tier (catches multi-wallet bot farms) ----
+  if (tier.priceTrx === 0.1 && microGlobalCount >= MICRO_GLOBAL_LIMIT) {
+    const reason = `0.1 TRX tier temporarily paused (${microGlobalCount}/${MICRO_GLOBAL_LIMIT} per hour)`;
+    warn(reason);
+    recordTransaction({ txid, sender, amount, status: 'rejected_global_cap', error: reason })
+      .catch(e => error(`DB record fail: ${e.message}`));
+    getNettsBalance()
+      .then(bal => notifyFailure(sender, amount, reason, txid, bal))
+      .catch(() => {});
+    return;
   }
 
   // 3. New wallet check
@@ -521,42 +538,42 @@ async function processTransaction(tx) {
     
     if (isNew) {
       warn(`${sender} is new USDT wallet, needs 6 TRX. Refunding.`);
-      // await refund(sender, amount, 'New wallet needs 6 TRX package');
-      const nettsBalance = await getNettsBalance();
-      await notifyFailure(sender, amount, 'New/exchange wallet — needs 6 TRX package', txid, nettsBalance);
-      await recordTransaction({
+      recordTransaction({
         txid, sender, amount,
         status: 'refunded_new_wallet',
-      });
+      }).catch(e => error(`DB record fail: ${e.message}`));
+      getNettsBalance()
+        .then(bal => notifyFailure(sender, amount, 'New/exchange wallet — needs 6 TRX package', txid, bal))
+        .catch(() => {});
       return;
     }
   }
 
-  // 3. Buy energy from Netts
+  // 4. Buy energy from Netts — CRITICAL PATH (irreducible ~2-5s)
   info(`Buying ${tier.energy} energy for ${sender} via Netts`);
   const result = await buyEnergyFromNetts(sender, tier.energy);
 
   if (!result.success) {
     error(`Energy purchase failed: ${result.errorMsg}`);
-    // await refund(sender, amount, 'Provider error');
-    const nettsBalance = await getNettsBalance();
-    await notifyFailure(sender, amount, result.errorMsg, txid, nettsBalance);
-    await recordTransaction({
+    recordTransaction({
       txid, sender, amount,
       status: 'refunded_provider_error',
       error: result.errorMsg,
-    });
+    }).catch(e => error(`DB record fail: ${e.message}`));
+    getNettsBalance()
+      .then(bal => notifyFailure(sender, amount, result.errorMsg, txid, bal))
+      .catch(() => {});
     return;
   }
 
-  // 4. Record success
+  // 5. SUCCESS — Energy is delivered! Everything below is bookkeeping.
+  //    Fire DB record + all notifications in parallel, don't block the loop.
   const profit = amount - result.costTrx;
   info(`✓ Delivered ${tier.energy} energy to ${sender} (order ${result.orderId}). ` +
        `Revenue: ${amount} TRX, Cost: ${result.costTrx} TRX, Profit: ${profit.toFixed(3)} TRX`);
-  const nettsBalance = await getNettsBalance();
-  await notifyPurchase(sender, tier.energy, result.costTrx, result.orderId);
-  await notifySuccess(sender, amount, tier.energy, result.costTrx, profit, result.orderId, txid, nettsBalance);
-  await recordTransaction({
+
+  // DB record — important but shouldn't block the next transaction
+  recordTransaction({
     txid, sender, amount,
     status: 'delivered',
     energy: tier.energy,
@@ -564,7 +581,15 @@ async function processTransaction(tx) {
     profit,
     orderId: result.orderId,
     hash: result.hash,
-  });
+  }).catch(e => error(`DB record fail: ${e.message}`));
+
+  // Notifications — all fire-and-forget in parallel
+  Promise.all([
+    notifyPurchase(sender, tier.energy, result.costTrx, result.orderId),
+    getNettsBalance().then(bal =>
+      notifySuccess(sender, amount, tier.energy, result.costTrx, profit, result.orderId, txid, bal)
+    ),
+  ]).catch(() => {});
 }
 
 let lastCheckMs = Date.now() - 5 * 60 * 1000;
@@ -578,30 +603,37 @@ async function checkTransactions() {
     const queryMinTimestamp = Math.max(lastCheckMs - 60 * 1000, Date.now() - 5 * 60 * 1000);
     const txs = await getIncomingTransactions(RECEIVE_ADDRESS, queryMinTimestamp);
 
+    // Update watermark and claim transactions (sequential — claims must be atomic)
+    const claimed = [];
     for (const tx of txs) {
       if (tx.timestampMs && tx.timestampMs > lastCheckMs) {
         lastCheckMs = tx.timestampMs;
       }
 
-      const claimed = await claimTransaction(tx);
-      if (!claimed) continue;
+      const ok = await claimTransaction(tx);
+      if (ok) claimed.push(tx);
+    }
 
+    // Process all claimed transactions concurrently — no reason to make
+    // payment #3 wait for #1 and #2 to finish their Netts calls.
+    await Promise.all(claimed.map(tx => (async () => {
       try {
-        await notifyFundReceived(tx.sender, tx.amount, tx.txid);
+        // Fire-and-forget: fund notification is informational, don't block energy delivery
+        notifyFundReceived(tx.sender, tx.amount, tx.txid).catch(() => {});
         await processTransaction(tx);
       } catch (err) {
         error(`Unexpected error processing ${tx.txid}: ${err.message}`);
-        await recordTransaction({
+        recordTransaction({
           txid: tx.txid,
           sender: tx.sender,
           amount: tx.amount,
           status: 'error_unhandled',
           error: err.message,
-        });
+        }).catch(e => error(`DB record fail: ${e.message}`));
       } finally {
         activeProcessingTxids.delete(tx.txid);
       }
-    }
+    })()));
   } catch (e) {
     error(`Cron job error in checkTransactions: ${e.message}`);
   } finally {

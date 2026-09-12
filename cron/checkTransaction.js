@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const { checkTransactions } = require('../controllers/transactons');
 
 const hasApiKey = Boolean(process.env.TRONGRID_API_KEY && process.env.TRONGRID_API_KEY.trim());
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || (hasApiKey ? 3000 : 5000);
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || (hasApiKey ? 2000 : 4000);
 let isLoopRunning = false;
 
 async function pollLoop() {
