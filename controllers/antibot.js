@@ -107,16 +107,94 @@ async function getAccountProfile(address) {
   }
 }
 
-// ---------- USDT Destination Tracking ----------
+// ---------- USDT Activity & Bot Signature Tracking ----------
 
 /**
- * Fetch the USDT (TRC20) transfer destinations for a given address.
- * Returns an array of destination addresses the sender has sent USDT to.
+ * Detect "paired probe" pattern: the bot sends amount X, then receives back X ± small delta.
+ * This catch-all works regardless of what dollar amounts the bot uses.
+ * Returns true if 2+ such paired round-trips are found.
  */
-async function getUsdtDestinations(address) {
+function detectPairedProbes(txs, address) {
+  const outgoing = []; // { amount, timestamp }
+  const incoming = []; // { amount, timestamp }
+
+  for (const tx of txs) {
+    const amount = Number(tx.value) / 1e6;
+    if (amount <= 0) continue;
+
+    if (tx.from === address) {
+      outgoing.push({ amount, ts: tx.block_timestamp || 0 });
+    } else if (tx.to === address) {
+      incoming.push({ amount, ts: tx.block_timestamp || 0 });
+    }
+  }
+
+  // Look for round-trip pairs: outgoing X matched by incoming X ± 0.5%
+  // The bot sends a probe (e.g. 2000 USDT out), then gets a rebate (e.g. 2.001 USDT in)
+  // OR sends a large drain (69k out), matched by a large incoming (69k in)
+  let pairedCount = 0;
+  const usedIncoming = new Set();
+
+  for (const out of outgoing) {
+    for (let i = 0; i < incoming.length; i++) {
+      if (usedIncoming.has(i)) continue;
+      const inc = incoming[i];
+      const diff = Math.abs(out.amount - inc.amount);
+      const tolerance = Math.max(out.amount * 0.005, 0.01); // 0.5% or $0.01
+      if (diff <= tolerance) {
+        pairedCount++;
+        usedIncoming.add(i);
+        break;
+      }
+    }
+  }
+
+  return pairedCount >= 2; // 2+ matched round-trips = bot
+}
+
+/**
+ * Detect vanity suffix clustering: bot contracts share identical last 5+ chars.
+ * E.g. TRJ4pAS6...huHSnC, TRJ4RAyg...huHSnC, TKrskQVo...huHSnC
+ * Real users never interact with 2+ different addresses sharing the same suffix.
+ */
+function detectVanitySuffix(txs, address) {
+  const counterparties = new Set();
+
+  for (const tx of txs) {
+    if (tx.from === address && tx.to) counterparties.add(tx.to);
+    if (tx.to === address && tx.from) counterparties.add(tx.from);
+  }
+
+  // Group by last 5 characters
+  const suffixGroups = {};
+  for (const addr of counterparties) {
+    if (addr.length < 10) continue;
+    const suffix = addr.slice(-5);
+    if (!suffixGroups[suffix]) suffixGroups[suffix] = [];
+    suffixGroups[suffix].push(addr);
+  }
+
+  // If 2+ DIFFERENT addresses share the same 5-char suffix → vanity contract bot
+  for (const [suffix, addrs] of Object.entries(suffixGroups)) {
+    if (addrs.length >= 2) {
+      return { detected: true, suffix, addresses: addrs };
+    }
+  }
+
+  return { detected: false };
+}
+
+/**
+ * Fetch the USDT (TRC20) transfer activity for a given address.
+ * Uses 3 layers of detection (all amount-agnostic):
+ *   1. Hardcoded signature (2000/2.001 — fast path for known current bots)
+ *   2. Paired probe detection (send X, receive X±delta — catches ANY future amounts)
+ *   3. Vanity suffix clustering (2+ counterparties with same address suffix)
+ */
+async function getUsdtActivity(address) {
   const cached = usdtDestCache.get(address);
   if (cached && (Date.now() - cached.fetchedAt) < USDT_DEST_CACHE_TTL_MS) {
-    return cached.destinations;
+    return cached;
   }
 
   const headers = TRONGRID_API_KEY ? { 'TRON-PRO-API-KEY': TRONGRID_API_KEY } : {};
@@ -128,8 +206,7 @@ async function getUsdtDestinations(address) {
         headers,
         params: {
           contract_address: USDT_CONTRACT,
-          only_from: true,     // only outgoing USDT transfers
-          limit: 20,
+          limit: 30,
           only_confirmed: true,
         },
         timeout: 8000,
@@ -139,21 +216,62 @@ async function getUsdtDestinations(address) {
     const trc20Txs = res.data?.data || [];
     const destinations = [];
 
+    // --- Layer 1: Hardcoded signature (current known bots) ---
+    let has2000UsdtTransfer = false;
+    let has2_001UsdtTransfer = false;
+    let hasHighValueFlashTransfer = false;
+
     for (const tx of trc20Txs) {
       if (tx.from === address && tx.to) {
         destinations.push(tx.to);
       }
+
+      const amount = Number(tx.value) / 1e6;
+      if (Math.abs(amount - 2000) < 0.001) has2000UsdtTransfer = true;
+      if (Math.abs(amount - 2.001) < 0.0001) has2_001UsdtTransfer = true;
+      if (amount > 10000) hasHighValueFlashTransfer = true;
     }
 
-    // Deduplicate
-    const uniqueDest = [...new Set(destinations)];
+    const hardcodedSignature = (has2000UsdtTransfer && has2_001UsdtTransfer) ||
+                               (has2000UsdtTransfer && hasHighValueFlashTransfer);
 
-    usdtDestCache.set(address, { destinations: uniqueDest, fetchedAt: Date.now() });
-    return uniqueDest;
+    // --- Layer 2: Paired probe detection (amount-agnostic) ---
+    const hasPairedProbes = detectPairedProbes(trc20Txs, address);
+
+    // --- Layer 3: Vanity suffix clustering ---
+    const vanityResult = detectVanitySuffix(trc20Txs, address);
+
+    const isArbitrageBot = hardcodedSignature || hasPairedProbes || vanityResult.detected;
+
+    let botReason = null;
+    if (hardcodedSignature) botReason = 'Hardcoded signature (2000/2.001 USDT loop)';
+    else if (hasPairedProbes) botReason = 'Paired probe transfers detected (send X → receive X±δ)';
+    else if (vanityResult.detected) botReason = `Vanity suffix cluster: ${vanityResult.addresses.slice(0, 3).join(', ')} (suffix: ...${vanityResult.suffix})`;
+
+    const uniqueDest = [...new Set(destinations)];
+    const result = {
+      destinations: uniqueDest,
+      isArbitrageBot,
+      botReason,
+      hasPairedProbes,
+      hasVanitySuffix: vanityResult.detected,
+      fetchedAt: Date.now(),
+    };
+
+    usdtDestCache.set(address, result);
+    return result;
   } catch (e) {
-    warn(`Failed to fetch USDT destinations for ${address}: ${e.message}`);
-    return [];
+    warn(`Failed to fetch USDT activity for ${address}: ${e.message}`);
+    return { destinations: [], isArbitrageBot: false, botReason: null, fetchedAt: Date.now() };
   }
+}
+
+/**
+ * Fetch the USDT (TRC20) transfer destinations for a given address.
+ */
+async function getUsdtDestinations(address) {
+  const activity = await getUsdtActivity(address);
+  return activity.destinations || [];
 }
 
 /**
@@ -223,10 +341,34 @@ async function scanForBotClusters() {
       continue;
     }
 
-    const destinations = await getUsdtDestinations(sender);
+    const activity = await getUsdtActivity(sender);
     apiCalls++;
 
-    for (const dest of destinations) {
+    // If arbitrage/flash-loan bot pattern detected, block immediately
+    if (activity.isArbitrageBot) {
+      warn(`🚨 Bot pattern detected for ${sender}: ${activity.botReason}`);
+      await User.findOneAndUpdate(
+        { address: sender },
+        {
+          $set: {
+            isBlocked: true,
+            blockedAt: new Date(),
+            blockReason: `Bot pattern: ${activity.botReason}`,
+          },
+        },
+        { upsert: true }
+      );
+
+      sendTelegramMessage(
+        `🤖 BOT BLOCKED (Pattern Detection)\n` +
+        `Sender: ${sender}\n` +
+        `Pattern: ${activity.botReason}\n` +
+        `Action: Permanently blocked from all services`
+      ).catch(() => {});
+      continue;
+    }
+
+    for (const dest of activity.destinations || []) {
       if (!destToSenders.has(dest)) destToSenders.set(dest, []);
       destToSenders.get(dest).push(sender);
     }
@@ -506,6 +648,37 @@ async function checkAntiBot(sender, amount, priceTrx) {
       allowed: false,
       reason: 'Wallet linked to bot network',
       status: 'blocked_bot_cluster',
+    };
+  }
+
+  // Check 3.5: Universal Bot Pattern Detection (paired probes, vanity suffix, hardcoded signature)
+  const usdtActivity = await getUsdtActivity(sender);
+  if (usdtActivity.isArbitrageBot) {
+    warn(`🚨 Bot pattern detected for ${sender}: ${usdtActivity.botReason}`);
+
+    await User.findOneAndUpdate(
+      { address: sender },
+      {
+        $set: {
+          isBlocked: true,
+          blockedAt: new Date(),
+          blockReason: `Bot pattern: ${usdtActivity.botReason}`,
+        },
+      },
+      { upsert: true }
+    );
+
+    sendTelegramMessage(
+      `🤖 BOT BLOCKED (Pre-Delivery)\n` +
+      `Sender: ${sender}\n` +
+      `Pattern: ${usdtActivity.botReason}\n` +
+      `Action: Permanently blocked from all services`
+    ).catch(() => {});
+
+    return {
+      allowed: false,
+      reason: `Bot pattern detected: ${usdtActivity.botReason}`,
+      status: 'blocked_arbitrage_bot',
     };
   }
 

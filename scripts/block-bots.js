@@ -31,9 +31,9 @@ async function sleep(ms) {
 }
 
 /**
- * Get outgoing USDT destinations for an address.
+ * Get outgoing USDT activity and detect arbitrage bot signature.
  */
-async function getUsdtDestinations(address) {
+async function getUsdtActivity(address) {
   const headers = TRONGRID_API_KEY ? { 'TRON-PRO-API-KEY': TRONGRID_API_KEY } : {};
 
   try {
@@ -43,8 +43,7 @@ async function getUsdtDestinations(address) {
         headers,
         params: {
           contract_address: USDT_CONTRACT,
-          only_from: true,
-          limit: 20,
+          limit: 30,
           only_confirmed: true,
         },
         timeout: 10000,
@@ -53,23 +52,45 @@ async function getUsdtDestinations(address) {
 
     const txs = res.data?.data || [];
     const destinations = new Set();
+    let has2000UsdtTransfer = false;
+    let has2_001UsdtTransfer = false;
+    let hasHighValueFlashTransfer = false;
 
     for (const tx of txs) {
       if (tx.from === address && tx.to) {
         destinations.add(tx.to);
       }
+
+      const amount = Number(tx.value) / 1e6;
+      if (Math.abs(amount - 2000) < 0.001) {
+        has2000UsdtTransfer = true;
+      }
+      if (Math.abs(amount - 2.001) < 0.0001) {
+        has2_001UsdtTransfer = true;
+      }
+      if (amount > 10000) {
+        hasHighValueFlashTransfer = true;
+      }
     }
 
-    return [...destinations];
+    const isArbitrageBot = (has2000UsdtTransfer && has2_001UsdtTransfer) ||
+                           (has2000UsdtTransfer && hasHighValueFlashTransfer);
+
+    return {
+      destinations: [...destinations],
+      isArbitrageBot,
+      has2000UsdtTransfer,
+      has2_001UsdtTransfer,
+    };
   } catch (e) {
     console.error(`  ⚠ TronGrid error for ${address}: ${e.message}`);
-    return [];
+    return { destinations: [], isArbitrageBot: false };
   }
 }
 
 async function main() {
   console.log('\n' + '='.repeat(60));
-  console.log('  BOT NETWORK BLOCKER (USDT Destination Clustering)');
+  console.log('  BOT NETWORK & ARBITRAGE SIGNATURE BLOCKER');
   console.log('='.repeat(60));
 
   await mongoose.connect(MONGODB_URL);
@@ -79,7 +100,10 @@ async function main() {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const recentSenders = await Transaction.distinct('sender', {
     status: 'delivered',
-    processedAt: { $gte: since },
+    $or: [
+      { processedAt: { $gte: since } },
+      { receivedAt: { $gte: since } },
+    ],
   });
 
   console.log(`📋 Found ${recentSenders.length} unique senders with deliveries in the last 7 days\n`);
@@ -90,20 +114,26 @@ async function main() {
     return;
   }
 
-  // Step 2: Look up USDT destinations for each sender
+  // Step 2: Look up USDT activity & signatures for each sender
   const destToSenders = new Map(); // USDT destination → [sender addresses]
+  const arbitrageBotSenders = [];
   const noUsdtTxs = [];
   let apiCalls = 0;
 
   for (const sender of recentSenders) {
     console.log(`  🔍 Checking USDT history for ${sender}...`);
-    const destinations = await getUsdtDestinations(sender);
+    const activity = await getUsdtActivity(sender);
     apiCalls++;
 
-    if (destinations.length === 0) {
+    if (activity.isArbitrageBot) {
+      console.log(`    🚨 ARBITRAGE BOT SIGNATURE DETECTED for ${sender} (2000/2.001 USDT loop)`);
+      arbitrageBotSenders.push(sender);
+    }
+
+    if (activity.destinations.length === 0) {
       noUsdtTxs.push(sender);
     } else {
-      for (const dest of destinations) {
+      for (const dest of activity.destinations) {
         if (!destToSenders.has(dest)) destToSenders.set(dest, []);
         destToSenders.get(dest).push(sender);
       }
@@ -112,11 +142,28 @@ async function main() {
     // Rate limit: pause every 10 API calls
     if (apiCalls % 10 === 0) {
       console.log(`  ⏳ Pausing (${apiCalls} API calls made)...`);
-      await sleep(2000);
+      await sleep(1500);
     }
   }
 
+  // Block individual signature bots
+  if (arbitrageBotSenders.length > 0) {
+    console.log(`\n🚫 Blocking ${arbitrageBotSenders.length} arbitrage signature bot wallets...`);
+    await User.updateMany(
+      { address: { $in: arbitrageBotSenders } },
+      {
+        $set: {
+          isBlocked: true,
+          blockedAt: new Date(),
+          blockReason: 'Arbitrage bot signature detected (2000/2.001 USDT loop)',
+        },
+      }
+    );
+    console.log(`✅ Successfully blocked ${arbitrageBotSenders.length} arbitrage bot wallets.`);
+  }
+
   console.log(`\n📊 Analysis complete (${apiCalls} API calls made)`);
+  console.log(`  Arbitrage signature bots blocked: ${arbitrageBotSenders.length}`);
   console.log(`  Unique USDT destinations found: ${destToSenders.size}`);
   console.log(`  Senders with no USDT txs: ${noUsdtTxs.length}\n`);
 
