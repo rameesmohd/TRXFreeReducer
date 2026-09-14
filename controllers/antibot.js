@@ -110,86 +110,8 @@ async function getAccountProfile(address) {
 // ---------- USDT Activity & Bot Signature Tracking ----------
 
 /**
- * Detect "paired probe" pattern: the bot sends amount X, then receives back X ± small delta.
- * This catch-all works regardless of what dollar amounts the bot uses.
- * Returns true if 2+ such paired round-trips are found.
- */
-function detectPairedProbes(txs, address) {
-  const outgoing = []; // { amount, timestamp }
-  const incoming = []; // { amount, timestamp }
-
-  for (const tx of txs) {
-    const amount = Number(tx.value) / 1e6;
-    if (amount <= 0) continue;
-
-    if (tx.from === address) {
-      outgoing.push({ amount, ts: tx.block_timestamp || 0 });
-    } else if (tx.to === address) {
-      incoming.push({ amount, ts: tx.block_timestamp || 0 });
-    }
-  }
-
-  // Look for round-trip pairs: outgoing X matched by incoming X ± 0.5%
-  // The bot sends a probe (e.g. 2000 USDT out), then gets a rebate (e.g. 2.001 USDT in)
-  // OR sends a large drain (69k out), matched by a large incoming (69k in)
-  let pairedCount = 0;
-  const usedIncoming = new Set();
-
-  for (const out of outgoing) {
-    for (let i = 0; i < incoming.length; i++) {
-      if (usedIncoming.has(i)) continue;
-      const inc = incoming[i];
-      const diff = Math.abs(out.amount - inc.amount);
-      const tolerance = Math.max(out.amount * 0.005, 0.01); // 0.5% or $0.01
-      if (diff <= tolerance) {
-        pairedCount++;
-        usedIncoming.add(i);
-        break;
-      }
-    }
-  }
-
-  return pairedCount >= 2; // 2+ matched round-trips = bot
-}
-
-/**
- * Detect vanity suffix clustering: bot contracts share identical last 5+ chars.
- * E.g. TRJ4pAS6...huHSnC, TRJ4RAyg...huHSnC, TKrskQVo...huHSnC
- * Real users never interact with 2+ different addresses sharing the same suffix.
- */
-function detectVanitySuffix(txs, address) {
-  const counterparties = new Set();
-
-  for (const tx of txs) {
-    if (tx.from === address && tx.to) counterparties.add(tx.to);
-    if (tx.to === address && tx.from) counterparties.add(tx.from);
-  }
-
-  // Group by last 5 characters
-  const suffixGroups = {};
-  for (const addr of counterparties) {
-    if (addr.length < 10) continue;
-    const suffix = addr.slice(-5);
-    if (!suffixGroups[suffix]) suffixGroups[suffix] = [];
-    suffixGroups[suffix].push(addr);
-  }
-
-  // If 2+ DIFFERENT addresses share the same 5-char suffix → vanity contract bot
-  for (const [suffix, addrs] of Object.entries(suffixGroups)) {
-    if (addrs.length >= 2) {
-      return { detected: true, suffix, addresses: addrs };
-    }
-  }
-
-  return { detected: false };
-}
-
-/**
  * Fetch the USDT (TRC20) transfer activity for a given address.
- * Uses 3 layers of detection (all amount-agnostic):
- *   1. Hardcoded signature (2000/2.001 — fast path for known current bots)
- *   2. Paired probe detection (send X, receive X±delta — catches ANY future amounts)
- *   3. Vanity suffix clustering (2+ counterparties with same address suffix)
+ * Inspects outgoing destinations and flags known signature bots (2000 / 2.001 loop).
  */
 async function getUsdtActivity(address) {
   const cached = usdtDestCache.get(address);
@@ -216,8 +138,7 @@ async function getUsdtActivity(address) {
     const trc20Txs = res.data?.data || [];
     const destinations = [];
 
-    // --- Layer 1: Hardcoded signature (current known bots) ---
-    // Specifically requires the exact probe/rebate loop (2000 out + 2.001 in)
+    // Check for the specific 2000 / 2.001 USDT probe loop
     let has2000UsdtTransfer = false;
     let has2_001UsdtTransfer = false;
 
@@ -231,28 +152,14 @@ async function getUsdtActivity(address) {
       if (Math.abs(amount - 2.001) < 0.0001) has2_001UsdtTransfer = true;
     }
 
-    const hardcodedSignature = has2000UsdtTransfer && has2_001UsdtTransfer;
-
-    // --- Layer 2: Paired probe detection (amount-agnostic) ---
-    const hasPairedProbes = detectPairedProbes(trc20Txs, address);
-
-    // --- Layer 3: Vanity suffix clustering ---
-    const vanityResult = detectVanitySuffix(trc20Txs, address);
-
-    const isArbitrageBot = hardcodedSignature || hasPairedProbes || vanityResult.detected;
-
-    let botReason = null;
-    if (hardcodedSignature) botReason = 'Hardcoded signature (2000/2.001 USDT loop)';
-    else if (hasPairedProbes) botReason = 'Paired probe transfers detected (send X → receive X±δ)';
-    else if (vanityResult.detected) botReason = `Vanity suffix cluster: ${vanityResult.addresses.slice(0, 3).join(', ')} (suffix: ...${vanityResult.suffix})`;
+    const isArbitrageBot = has2000UsdtTransfer && has2_001UsdtTransfer;
+    const botReason = isArbitrageBot ? 'Hardcoded signature (2000/2.001 USDT loop)' : null;
 
     const uniqueDest = [...new Set(destinations)];
     const result = {
       destinations: uniqueDest,
       isArbitrageBot,
       botReason,
-      hasPairedProbes,
-      hasVanitySuffix: vanityResult.detected,
       fetchedAt: Date.now(),
     };
 
