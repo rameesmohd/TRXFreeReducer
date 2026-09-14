@@ -185,28 +185,43 @@ async function hasSentToKnownBotDest(sender) {
  * Call this periodically (e.g., every 5 minutes from the cron job).
  */
 async function scanForBotClusters() {
-  if (!ANTIBOT_ENABLED) return;
+  if (!ANTIBOT_ENABLED) {
+    info('Bot cluster scan skipped (ANTIBOT_ENABLED is false)');
+    return;
+  }
 
   const since = new Date(Date.now() - SCAN_LOOKBACK_MS);
 
-  // Get all unique senders who received energy recently
+  // Get all unique senders who received energy recently (checks both processedAt and receivedAt)
   const recentRecipients = await Transaction.distinct('sender', {
     status: 'delivered',
-    processedAt: { $gte: since },
+    $or: [
+      { processedAt: { $gte: since } },
+      { receivedAt: { $gte: since } },
+    ],
   });
 
-  if (recentRecipients.length < USDT_DEST_CLUSTER_THRESHOLD) return;
+  info(`🔍 Bot cluster scan started: found ${recentRecipients.length} delivered wallet(s) in last 2h`);
 
-  info(`Scanning ${recentRecipients.length} recent recipients for USDT destination clustering...`);
+  if (recentRecipients.length < USDT_DEST_CLUSTER_THRESHOLD) {
+    info(`ℹ️ Found ${recentRecipients.length}/${USDT_DEST_CLUSTER_THRESHOLD} unique recipients (needs 3+ to form a cluster). Scan finished.`);
+    return;
+  }
+
+  info(`Analyzing USDT transfer destinations for ${recentRecipients.length} wallets...`);
 
   // Map: USDT destination → list of senders who sent to it
   const destToSenders = new Map();
   let apiCalls = 0;
+  let skippedBlocked = 0;
 
   for (const sender of recentRecipients) {
     // Skip already-blocked senders
     const user = await User.findOne({ address: sender, isBlocked: true }, { _id: 1 }).lean();
-    if (user) continue;
+    if (user) {
+      skippedBlocked++;
+      continue;
+    }
 
     const destinations = await getUsdtDestinations(sender);
     apiCalls++;
@@ -221,6 +236,8 @@ async function scanForBotClusters() {
       await new Promise(r => setTimeout(r, 1000));
     }
   }
+
+  info(`Fetched USDT destinations for ${apiCalls} active wallets (${skippedBlocked} already blocked skipped)`);
 
   // Detect clusters
   for (const [dest, senders] of destToSenders) {

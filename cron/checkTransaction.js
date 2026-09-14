@@ -1,3 +1,4 @@
+require('dotenv/config');
 const cron = require('node-cron');
 const { checkTransactions } = require('../controllers/transactons');
 const { scanForBotClusters, ANTIBOT_ENABLED } = require('../controllers/antibot');
@@ -43,10 +44,19 @@ async function main() {
     }
   });
 
-  // Bot cluster scanner: runs every 5 minutes
+  // Bot cluster scanner: runs on startup + every 5 minutes
   // Checks where recent energy recipients sent their USDT
   // If multiple recipients → same USDT destination → bot farm → block all
   if (ANTIBOT_ENABLED) {
+    // Run once 5 seconds after startup to catch bots immediately
+    setTimeout(async () => {
+      try {
+        await scanForBotClusters();
+      } catch (err) {
+        console.error('Error during initial bot cluster scan:', err);
+      }
+    }, 5000);
+
     cron.schedule('*/5 * * * *', async () => {
       try {
         await scanForBotClusters();
@@ -54,7 +64,7 @@ async function main() {
         console.error('Error during bot cluster scan:', err);
       }
     });
-    console.log('🔍 Bot cluster scanner scheduled (every 5 minutes)');
+    console.log('🔍 Bot cluster scanner scheduled (runs on startup + every 5 minutes)');
   }
 }
 
