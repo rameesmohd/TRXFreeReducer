@@ -331,7 +331,7 @@ async function getNettsBalance() {
 const MAX_PURCHASES_PER_DAY = 12;
 const BOT_WINDOW_MS = 15 * 60 * 1000;       // 15 minutes
 const BOT_TX_THRESHOLD = 10;                 // 10 txs inside that window = bot
-const MICRO_GLOBAL_LIMIT = 60;               // max 0.1 TRX deliveries per hour (all addresses)
+const MICRO_GLOBAL_LIMIT = 100;               // max 0.1 TRX deliveries per hour (all addresses)
 const MICRO_GLOBAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 /**
