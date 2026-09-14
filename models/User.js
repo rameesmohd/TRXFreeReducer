@@ -7,6 +7,11 @@ const userSchema = new mongoose.Schema(
     isBlocked: { type: Boolean, default: false },
     blockedAt: { type: Date, default: null },
     blockReason: { type: String, default: null },
+    // Anti-bot fields
+    riskScore: { type: Number, default: null },
+    accountAgeDays: { type: Number, default: null },
+    clusterGroup: { type: String, default: null }, // USDT destination address if part of bot cluster
+    lastRiskAssessedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

@@ -23,5 +23,6 @@ transactionSchema.index({ sender: 1, status: 1, processedAt: -1 }); // getDailyP
 transactionSchema.index({ sender: 1, receivedAt: -1 });             // getRecentTxCount
 transactionSchema.index({ status: 1, processedAt: -1 });            // Stats 24h aggregation
 transactionSchema.index({ amountTrx: 1, status: 1, processedAt: -1 }); // global 0.1 TRX cap
+transactionSchema.index({ sender: 1, amountTrx: 1, status: 1 });    // hasSenderUsedMicroTier
 
 module.exports = mongoose.model('Transaction', transactionSchema);

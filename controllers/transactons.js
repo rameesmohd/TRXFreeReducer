@@ -4,6 +4,7 @@ const fs =require ('fs');
 const Transaction =require('../models/Transaction.js');
 const User = require('../models/User.js');
 const { notifyFundReceived, notifyPurchase, notifySuccess, notifyFailure, sendTelegramMessage } = require('./notifications.js');
+const { checkAntiBot } = require('./antibot.js');
 require('dotenv/config');
 
 // ---------- Configuration ----------
@@ -327,10 +328,10 @@ async function getNettsBalance() {
 }
 
 // ---------- Rate-limiting / anti-bot ----------
-const MAX_PURCHASES_PER_DAY = 15;
+const MAX_PURCHASES_PER_DAY = 12;
 const BOT_WINDOW_MS = 15 * 60 * 1000;       // 15 minutes
 const BOT_TX_THRESHOLD = 10;                 // 10 txs inside that window = bot
-const MICRO_GLOBAL_LIMIT = 100;               // max 0.1 TRX deliveries per hour (all addresses)
+const MICRO_GLOBAL_LIMIT = 60;               // max 0.1 TRX deliveries per hour (all addresses)
 const MICRO_GLOBAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 /**
@@ -527,6 +528,22 @@ async function processTransaction(tx) {
       .catch(e => error(`DB record fail: ${e.message}`));
     getNettsBalance()
       .then(bal => notifyFailure(sender, amount, reason, txid, bal))
+      .catch(() => {});
+    return;
+  }
+
+  // ---- Anti-bot v2: one-time micro, cooldown, account age, risk scoring ----
+  const antibotResult = await checkAntiBot(sender, amount, tier.priceTrx);
+  if (!antibotResult.allowed) {
+    warn(`Anti-bot rejected ${sender}: ${antibotResult.reason}`);
+    recordTransaction({
+      txid, sender, amount,
+      status: antibotResult.status || 'rejected_antibot',
+      error: antibotResult.reason,
+    }).catch(e => error(`DB record fail: ${e.message}`));
+    // Fire-and-forget notifications
+    getNettsBalance()
+      .then(bal => notifyFailure(sender, amount, antibotResult.reason, txid, bal))
       .catch(() => {});
     return;
   }

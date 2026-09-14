@@ -86,10 +86,22 @@ async function notifyFailure(sender, amountTrx, reason, txid, nettsBalance) {
   await sendTelegramMessage(text);
 }
 
+// 4. Bot cluster detected
+async function notifyBotClusterDetected(fundingSource, linkedCount, totalStolen) {
+  const text =
+    `🕸️ Bot Cluster Detected\n` +
+    `Funding Source: ${fundingSource}\n` +
+    `Linked Wallets: ${linkedCount}\n` +
+    `Energy Stolen: ${(totalStolen || 0).toLocaleString()}\n` +
+    `Action: All wallets + funder blocked`;
+  await sendTelegramMessage(text);
+}
+
 module.exports = {
   sendTelegramMessage,
   notifyFundReceived,
   notifyPurchase,
   notifySuccess,
   notifyFailure,
+  notifyBotClusterDetected,
 };
