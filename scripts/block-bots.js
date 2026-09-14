@@ -68,9 +68,19 @@ async function getUsdtActivity(address) {
       if (Math.abs(amount - 2.001) < 0.0001) {
         has2_001UsdtTransfer = true;
       }
+<<<<<<< HEAD
     }
 
     const isArbitrageBot = has2000UsdtTransfer && has2_001UsdtTransfer;
+=======
+      if (amount > 10000) {
+        hasHighValueFlashTransfer = true;
+      }
+    }
+
+    const isArbitrageBot = (has2000UsdtTransfer && has2_001UsdtTransfer) ||
+                           (has2000UsdtTransfer && hasHighValueFlashTransfer);
+>>>>>>> de03834d36e40add01a17f0a2b4a90fd1559db7b
 
     return {
       destinations: [...destinations],
