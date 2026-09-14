@@ -18,7 +18,6 @@ const botClusterSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-botClusterSchema.index({ usdtDestination: 1 });
 botClusterSchema.index({ linkedAddresses: 1 });
 botClusterSchema.index({ isBlocked: 1 });
 
