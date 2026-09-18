@@ -19,5 +19,6 @@ const userSchema = new mongoose.Schema(
 
 
 userSchema.index({ address: 1, isBlocked: 1 }); // covered query for isSenderBlocked
+userSchema.index({ createdAt: 1 });               // new-address-per-hour rate limit
 
 module.exports = mongoose.model('User', userSchema);

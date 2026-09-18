@@ -333,6 +333,7 @@ const BOT_WINDOW_MS = 15 * 60 * 1000;       // 15 minutes
 const BOT_TX_THRESHOLD = 10;                 // 10 txs inside that window = bot
 const MICRO_GLOBAL_LIMIT = 100;               // max 0.1 TRX deliveries per hour (all addresses)
 const MICRO_GLOBAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const NEW_ADDRESSES_PER_HOUR = 5;             // max 5 brand-new addresses per hour
 
 /**
  * Check if a sender is blocked in the DB.
@@ -393,6 +394,15 @@ async function getMicroTierGlobalCount() {
 }
 
 /**
+ * Count brand-new user addresses (User documents created) in the last hour.
+ * Used to cap fresh wallet registrations and limit bot-farm address rotation.
+ */
+async function getNewUserAddressCountLastHour() {
+  const since = new Date(Date.now() - 60 * 60 * 1000);
+  return User.countDocuments({ createdAt: { $gte: since } });
+}
+
+/**
  * Detect bots by checking if a sender's recent transactions have suspiciously
  * uniform time gaps. Humans have irregular timing; bots send at fixed intervals.
  * Returns true if the coefficient of variation of gaps is below 15%.
@@ -447,13 +457,15 @@ async function processTransaction(tx) {
 
   // 2. Run ALL bot-detection / rate-limit DB queries in parallel
   //    (was 5 sequential awaits — now 1 round-trip)
-  const [blocked, recentCount, uniformTiming, dailyCount, microGlobalCount] =
+  const [blocked, recentCount, uniformTiming, dailyCount, microGlobalCount, existingUser, newAddressCount] =
     await Promise.all([
       isSenderBlocked(sender),
       getRecentTxCount(sender),
       hasUniformTiming(sender),
       getDailyPurchaseCount(sender),
       tier.priceTrx === 0.1 ? getMicroTierGlobalCount() : Promise.resolve(0),
+      User.findOne({ address: sender }, { _id: 1 }).lean(),
+      getNewUserAddressCountLastHour(),
     ]);
 
   // ---- Bot detection: sender is already blocked ----
@@ -525,6 +537,18 @@ async function processTransaction(tx) {
     const reason = `0.1 TRX tier temporarily paused (${microGlobalCount}/${MICRO_GLOBAL_LIMIT} per hour)`;
     warn(reason);
     recordTransaction({ txid, sender, amount, status: 'rejected_global_cap', error: reason })
+      .catch(e => error(`DB record fail: ${e.message}`));
+    getNettsBalance()
+      .then(bal => notifyFailure(sender, amount, reason, txid, bal))
+      .catch(() => {});
+    return;
+  }
+
+  // ---- New address rate limit: max 5 new addresses per hour ----
+  if (!existingUser && newAddressCount >= NEW_ADDRESSES_PER_HOUR) {
+    const reason = `New address rate limit reached (${newAddressCount}/${NEW_ADDRESSES_PER_HOUR} per hour). Try again later.`;
+    warn(`${reason} — rejecting new sender ${sender}`);
+    recordTransaction({ txid, sender, amount, status: 'rejected_new_address_limit', error: reason })
       .catch(e => error(`DB record fail: ${e.message}`));
     getNettsBalance()
       .then(bal => notifyFailure(sender, amount, reason, txid, bal))
