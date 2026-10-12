@@ -27,7 +27,7 @@ const ANTIBOT_ENABLED = process.env.ANTIBOT_V2_ENABLED !== 'false'; // on by def
 
 // ---------- Configuration ----------
 const MIN_ACCOUNT_AGE_HOURS = 1;                    // Minimum account age for 0.1 TRX tier
-const MIN_ACCOUNT_TX_COUNT = 5;                      // Minimum total txs for 0.1 TRX tier
+const MIN_ACCOUNT_TX_COUNT = 0;                      // Minimum prior txs for 0.1 TRX tier
 const USDT_DEST_CLUSTER_THRESHOLD = 10;               // 3+ wallets sending USDT to same dest = bot
 const RISK_BLOCK_THRESHOLD = 80;                     // Score >= 60 = reject transaction
 const RISK_PERMANENT_BLOCK_THRESHOLD = 90;           // Score >= 80 = permanent block
@@ -604,7 +604,7 @@ async function checkAntiBot(sender, amount, priceTrx) {
   if (ageHours < MIN_ACCOUNT_AGE_HOURS) {
     return {
       allowed: false,
-      reason: 'Promo tier requires wallet to be at least 24 hours old. Use the 2 TRX tier.',
+      reason: `Promo tier requires wallet to be at least ${MIN_ACCOUNT_AGE_HOURS} hour old. Use the 2 TRX tier.`,
       status: 'rejected_account_too_new',
     };
   }
