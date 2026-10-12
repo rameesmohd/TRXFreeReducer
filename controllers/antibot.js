@@ -26,11 +26,11 @@ const USDT_CONTRACT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 const ANTIBOT_ENABLED = process.env.ANTIBOT_V2_ENABLED !== 'false'; // on by default
 
 // ---------- Configuration ----------
-const MIN_ACCOUNT_AGE_HOURS = 24;                    // Minimum account age for 0.1 TRX tier
+const MIN_ACCOUNT_AGE_HOURS = 1;                    // Minimum account age for 0.1 TRX tier
 const MIN_ACCOUNT_TX_COUNT = 5;                      // Minimum total txs for 0.1 TRX tier
-const USDT_DEST_CLUSTER_THRESHOLD = 3;               // 3+ wallets sending USDT to same dest = bot
-const RISK_BLOCK_THRESHOLD = 60;                     // Score >= 60 = reject transaction
-const RISK_PERMANENT_BLOCK_THRESHOLD = 80;           // Score >= 80 = permanent block
+const USDT_DEST_CLUSTER_THRESHOLD = 10;               // 3+ wallets sending USDT to same dest = bot
+const RISK_BLOCK_THRESHOLD = 80;                     // Score >= 60 = reject transaction
+const RISK_PERMANENT_BLOCK_THRESHOLD = 90;           // Score >= 80 = permanent block
 const UNIQUE_MICRO_SENDERS_PER_HOUR = 15;            // Max distinct new senders on 0.1 TRX per hour
 const SCAN_LOOKBACK_MS = 2 * 60 * 60 * 1000;        // Scan USDT destinations from last 2 hours
 
